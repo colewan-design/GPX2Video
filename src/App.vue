@@ -5,6 +5,10 @@
       <button v-if="gpxPoints.length" class="load-new" @click="resetAll">Load new file</button>
     </header>
 
+    <div v-if="!gpxPoints.length" class="app-intro">
+      <p class="intro-text">Overlay your GPX track on top of your ride or hike footage — speed, elevation, heart rate, power, and more — then export it as an MP4.</p>
+    </div>
+
     <DropZone v-if="!gpxPoints.length" @file="loadFile" />
 
     <p v-if="parseError" class="error">{{ parseError }}</p>
@@ -19,9 +23,13 @@
       <!-- Video file loader strip (always shown once GPX is loaded) -->
       <VideoLoader :file-name="videoFileName" @file="onVideoFile" />
 
+      <!-- Filter selector (only shown when a video is loaded) -->
+      <FilterBar v-if="hasVideo" v-model="videoFilter" />
+
       <VideoStage
         ref="videoStageRef"
         :points="gpxPoints"
+        :filter="filterCss(videoFilter)"
         :anim-idx="activeAnimIdx"
         :trim-start="trimStart"
         :progress="activeProgress"
@@ -51,6 +59,7 @@
           :can-export="!exporting"
           :error="exportError"
           @export="onExport"
+          @cancel="cancelExport"
         />
       </div>
 
@@ -95,6 +104,8 @@ import PlaybackControls from './components/PlaybackControls.vue'
 import ExportButton     from './components/ExportButton.vue'
 import SyncPanel        from './components/SyncPanel.vue'
 import ChartRow         from './components/ChartRow.vue'
+import FilterBar        from './components/FilterBar.vue'
+import { filterCss }   from './utils/filters.js'
 import { useGpxParser }   from './composables/useGpxParser.js'
 import { useAnimation }   from './composables/useAnimation.js'
 import { useVideoSync }   from './composables/useVideoSync.js'
@@ -132,11 +143,12 @@ const {
 
 const videoFileName  = ref(null)
 const videoStageRef  = ref(null)
+const videoFilter    = ref('none')
 
 const hasVideo = computed(() => !!videoSrc.value)
 
 // --- Export ---
-const { exporting, exportProgress, exportError, startExport } = useVideoExport()
+const { exporting, exportProgress, exportError, startExport, cancel: cancelExport } = useVideoExport()
 
 function onExport() {
   const videoEl = videoStageRef.value?.getVideoEl()
@@ -149,6 +161,7 @@ function onExport() {
     trimEnd.value,
     videoTrimStart.value,
     videoTrimEnd.value,
+    filterCss(videoFilter.value),
   )
 }
 
@@ -242,6 +255,7 @@ function resetAll() {
   gpxReset()
   cleanupVideo()
   videoFileName.value  = null
+  videoFilter.value    = 'none'
   gpxPoints.value      = []
   stats.value          = null
   parseError.value     = ''
@@ -279,6 +293,14 @@ h1 {
   cursor: pointer;
 }
 .load-new:hover { color: var(--text); background: var(--bg3); }
+
+.app-intro { margin-bottom: 1rem; }
+.intro-text {
+  font-size: 13px;
+  color: var(--text3);
+  line-height: 1.6;
+  max-width: 560px;
+}
 
 .error {
   color: #ff5a5a;

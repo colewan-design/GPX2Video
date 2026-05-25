@@ -133,15 +133,10 @@ const useWindow = computed(() =>
 )
 const winN = computed(() => Math.max(1, props.windowEndIdx - props.windowStartIdx))
 
-// Playhead: window-relative when in window mode, absolute otherwise
-const activeAnimPct = computed(() => {
-  if (useWindow.value) {
-    return Math.max(0, Math.min(
-      ((props.animIdx - props.windowStartIdx) / winN.value) * 100, 100
-    ))
-  }
-  return Math.max(0, Math.min((props.animIdx / N.value) * 100, 100))
-})
+// Playhead: always absolute position over the full GPX track
+const activeAnimPct = computed(() =>
+  Math.max(0, Math.min((props.animIdx / N.value) * 100, 100))
+)
 
 // ─── Video timeline percentages ───────────────────────────────────────────────
 const vDur        = computed(() => Math.max(1, props.videoDuration))
@@ -168,17 +163,14 @@ const offsetDisplay = computed(() => {
 const trimRangeText = computed(() => {
   const pts = props.points
   if (!pts.length) return ''
-  const si = useWindow.value ? props.windowStartIdx : props.trimStart
-  const ei = useWindow.value ? props.windowEndIdx   : props.trimEnd
-  const s  = pts[Math.min(si, pts.length - 1)]
-  const e  = pts[Math.min(ei, pts.length - 1)]
+  const s = pts[0]
+  const e = pts[pts.length - 1]
   if (!s || !e) return ''
-  const d1 = (s.cumDist / 1000).toFixed(1)
   const d2 = (e.cumDist / 1000).toFixed(1)
   if (s.time && e.time) {
-    return `${d1} km → ${d2} km  ·  ${fmtTime(e.time - s.time)}`
+    return `${d2} km  ·  ${fmtTime(e.time - s.time)}`
   }
-  return `${d1} km → ${d2} km`
+  return `${d2} km`
 })
 
 // ─── Canvas elevation drawing ─────────────────────────────────────────────────
@@ -188,18 +180,15 @@ const videoWrapRef = ref(null)
 let ctx = null
 let ro  = null
 
-// Sample points for drawing — zooms to window range when active
+// Sample points for drawing — always the full GPX track
 const sampled = computed(() => {
   const pts = props.points
   if (!pts.length) return []
-  const from  = useWindow.value ? props.windowStartIdx : 0
-  const to    = useWindow.value ? props.windowEndIdx   : pts.length - 1
-  const count = Math.max(1, to - from)
-  const step  = Math.max(1, Math.floor(count / 400))
+  const to    = pts.length - 1
+  const step  = Math.max(1, Math.floor(to / 400))
   const result = []
-  for (let i = from; i <= to; i += step) result.push({ i: i - from, ele: pts[i].ele })
-  const lastI = to - from
-  if (result[result.length - 1]?.i !== lastI) result.push({ i: lastI, ele: pts[to].ele })
+  for (let i = 0; i <= to; i += step) result.push({ i, ele: pts[i].ele })
+  if (result[result.length - 1]?.i !== to) result.push({ i: to, ele: pts[to].ele })
   return result
 })
 
@@ -208,16 +197,29 @@ function draw() {
   const pts  = sampled.value
   const W    = canvasRef.value.width
   const H    = canvasRef.value.height
-  const drawN = useWindow.value ? winN.value : N.value
 
   const eleMin = pts.reduce((a, p) => Math.min(a, p.ele), Infinity)
   const eleMax = pts.reduce((a, p) => Math.max(a, p.ele), -Infinity)
   const range  = (eleMax - eleMin) || 1
 
-  const toX = (i) => (i / drawN) * W
+  const toX = (i) => (i / N.value) * W
   const toY = (e) => H - 3 - ((e - eleMin) / range) * (H - 8)
 
   ctx.clearRect(0, 0, W, H)
+
+  // Window region highlight (shown when video is synced)
+  if (useWindow.value && props.windowEndIdx > props.windowStartIdx) {
+    const wx1 = (props.windowStartIdx / N.value) * W
+    const wx2 = (props.windowEndIdx   / N.value) * W
+    ctx.fillStyle = 'rgba(58,143,255,0.10)'
+    ctx.fillRect(wx1, 0, wx2 - wx1, H)
+    ctx.strokeStyle = 'rgba(58,143,255,0.35)'
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.moveTo(wx1, 0); ctx.lineTo(wx1, H)
+    ctx.moveTo(wx2, 0); ctx.lineTo(wx2, H)
+    ctx.stroke()
+  }
 
   // Filled area
   ctx.beginPath()
@@ -323,7 +325,17 @@ let panAnchor = null  // { clientX, windowStartIdx }
 
 function beginWindowPan(event) {
   if (!useWindow.value || !wrapRef.value) return
+  // Seek video to the clicked absolute GPX position
+  const rect    = wrapRef.value.getBoundingClientRect()
   const clientX = event.touches ? event.touches[0].clientX : event.clientX
+  const pct     = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+  const clickedIdx = Math.round(pct * N.value)
+  // If click is within the window, use it as a seek; otherwise begin panning
+  if (clickedIdx >= props.windowStartIdx && clickedIdx <= props.windowEndIdx) {
+    const winPct = (clickedIdx - props.windowStartIdx) / Math.max(1, props.windowEndIdx - props.windowStartIdx)
+    const sec = props.videoTrimStart + winPct * (props.videoTrimEnd - props.videoTrimStart)
+    emit('seek', sec)
+  }
   panAnchor = { clientX, windowStartIdx: props.windowStartIdx }
   window.addEventListener('mousemove', onWindowPanMove)
   window.addEventListener('mouseup',   endWindowPan)
