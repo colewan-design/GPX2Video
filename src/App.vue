@@ -24,42 +24,60 @@
         :points="gpxPoints"
         :anim-idx="activeAnimIdx"
         :progress="activeProgress"
-        :total-time="stats.totalTime"
+        :total-time="activeTotal"
         :video-src="videoSrc"
         :playing="activePlaying"
         @timeupdate="onTimeUpdate"
+        @loadedmetadata="onVideoMetadata"
         @ended="onVideoEnded"
       />
 
-      <PlaybackControls
-        :playing="activePlaying"
-        :speed="playbackSpeed"
-        :track-name="trackName"
-        :has-video="hasVideo"
-        @toggle="onToggle"
-        @reset="onReset"
-        @speed="playbackSpeed = $event"
-      />
-
-      <!-- Sync offset row — only when video + GPX timestamps are both present -->
-      <div v-if="hasVideo && hasTimestamps" class="sync-row">
-        <div class="sync-left">
-          <span class="sync-label">Sync offset</span>
-          <span v-if="autoDetected" class="auto-badge">Auto-detected</span>
-          <span v-else class="manual-badge">Manual</span>
-        </div>
-        <input
-          class="offset-slider"
-          type="range"
-          min="-300"
-          max="300"
-          step="0.5"
-          :value="manualOffsetSec"
-          @input="setManualOffset(Number($event.target.value))"
+      <div class="controls-row">
+        <PlaybackControls
+          :playing="activePlaying"
+          :speed="playbackSpeed"
+          :track-name="trackName"
+          :has-video="hasVideo"
+          :disabled="exporting"
+          @toggle="onToggle"
+          @reset="onReset"
+          @speed="playbackSpeed = $event"
         />
-        <span class="offset-val">{{ offsetDisplay }}</span>
-        <button class="offset-reset" title="Reset to auto-detected offset" @click="setManualOffset(0)">↺</button>
+        <ExportButton
+          v-if="hasVideo"
+          :exporting="exporting"
+          :progress="exportProgress"
+          :can-export="!exporting"
+          :error="exportError"
+          @export="onExport"
+        />
       </div>
+
+      <!-- GPX timeline: elevation + trim + offset -->
+      <SyncPanel
+        :points="gpxPoints"
+        :anim-idx="activeAnimIdx"
+        :trim-start="trimStart"
+        :trim-end="trimEnd"
+        :has-video="hasVideo"
+        :has-timestamps="hasTimestamps"
+        :auto-detected="autoDetected"
+        :manual-offset-sec="manualOffsetSec"
+        :total-offset-sec="totalOffsetSec"
+        :video-duration="videoDuration"
+        :video-trim-start="videoTrimStart"
+        :video-trim-end="videoTrimEnd"
+        :video-progress="activeAbsProgress"
+        :window-start-idx="gpxWindowIdx.start"
+        :window-end-idx="gpxWindowIdx.end"
+        @update:trim-start="onTrimStart"
+        @update:trim-end="onTrimEnd"
+        @update:manual-offset-sec="setManualOffset"
+        @update:video-trim-start="onVideoTrimStart"
+        @update:video-trim-end="onVideoTrimEnd"
+        @seek="onVideoSeek"
+        @gpx-window-drag="setGpxWindowStart"
+      />
 
       <ChartRow :points="gpxPoints" />
     </template>
@@ -68,15 +86,18 @@
 
 <script setup>
 import { ref, computed, watch } from 'vue'
-import DropZone        from './components/DropZone.vue'
-import MetricsRow      from './components/MetricsRow.vue'
-import VideoLoader     from './components/VideoLoader.vue'
-import VideoStage      from './components/VideoStage.vue'
+import DropZone         from './components/DropZone.vue'
+import MetricsRow       from './components/MetricsRow.vue'
+import VideoLoader      from './components/VideoLoader.vue'
+import VideoStage       from './components/VideoStage.vue'
 import PlaybackControls from './components/PlaybackControls.vue'
-import ChartRow        from './components/ChartRow.vue'
-import { useGpxParser }  from './composables/useGpxParser.js'
-import { useAnimation }  from './composables/useAnimation.js'
-import { useVideoSync }  from './composables/useVideoSync.js'
+import ExportButton     from './components/ExportButton.vue'
+import SyncPanel        from './components/SyncPanel.vue'
+import ChartRow         from './components/ChartRow.vue'
+import { useGpxParser }   from './composables/useGpxParser.js'
+import { useAnimation }   from './composables/useAnimation.js'
+import { useVideoSync }   from './composables/useVideoSync.js'
+import { useVideoExport } from './composables/useVideoExport.js'
 
 // --- GPX ---
 const { gpxPoints, trackName, hasTimestamps, stats, parseError, loadFile } = useGpxParser()
@@ -87,15 +108,25 @@ const { animIdx: gpxAnimIdx, playing: gpxPlaying, playbackSpeed, progress: gpxPr
 // --- Video sync ---
 const {
   videoSrc,
-  playing:        vidPlaying,
-  animIdx:        vidAnimIdx,
-  progress:       vidProgress,
+  playing:           vidPlaying,
+  animIdx:           vidAnimIdx,
+  progress:          vidProgress,
+  videoAbsProgress:  vidAbsProgress,
   autoDetected,
   manualOffsetSec,
   totalOffsetSec,
+  trimStart,
+  trimEnd,
+  videoDuration,
+  videoTrimStart,
+  videoTrimEnd,
+  setVideoDuration,
+  gpxWindowIdx,
+  setGpxWindowStart,
   loadVideo,
-  onTimeUpdate:   processTimeUpdate,
-  cleanup:        cleanupVideo,
+  onTimeUpdate:      processTimeUpdate,
+  gpxIdxToVideoTime,
+  cleanup:           cleanupVideo,
 } = useVideoSync(gpxPoints)
 
 const videoFileName  = ref(null)
@@ -103,16 +134,50 @@ const videoStageRef  = ref(null)
 
 const hasVideo = computed(() => !!videoSrc.value)
 
-// --- Unified state (video mode takes precedence) ---
-const activeAnimIdx = computed(() => hasVideo.value ? vidAnimIdx.value  : gpxAnimIdx.value)
-const activeProgress = computed(() => hasVideo.value ? vidProgress.value : gpxProgress.value)
-const activePlaying  = computed(() => hasVideo.value ? vidPlaying.value  : gpxPlaying.value)
+// --- Export ---
+const { exporting, exportProgress, exportError, startExport } = useVideoExport()
 
-// --- Offset display ---
-const offsetDisplay = computed(() => {
-  const v = totalOffsetSec.value
-  const sign = v >= 0 ? '+' : ''
-  return `${sign}${v.toFixed(1)}s`
+function onExport() {
+  const videoEl = videoStageRef.value?.getVideoEl()
+  startExport(
+    videoEl,
+    gpxPoints.value,
+    totalOffsetSec.value,
+    stats.value?.totalTime ?? 0,
+    trimStart.value,
+    trimEnd.value,
+    videoTrimStart.value,
+    videoTrimEnd.value,
+  )
+}
+
+function onTrimStart(val) {
+  trimStart.value = val
+  if (hasVideo.value) {
+    const t = gpxIdxToVideoTime(val)
+    if (t >= 0) videoStageRef.value?.seekTo(t)
+  }
+}
+function onTrimEnd(val) {
+  trimEnd.value = val
+  if (hasVideo.value) {
+    const t = gpxIdxToVideoTime(val)
+    if (t >= 0) videoStageRef.value?.seekTo(t)
+  }
+}
+
+// --- Unified state (video mode takes precedence) ---
+const activeAnimIdx   = computed(() => hasVideo.value ? vidAnimIdx.value    : gpxAnimIdx.value)
+const activeProgress  = computed(() => hasVideo.value ? vidProgress.value   : gpxProgress.value)
+const activePlaying   = computed(() => hasVideo.value ? vidPlaying.value    : gpxPlaying.value)
+// Absolute video progress (0→1 over full video) used only for the strip playhead
+const activeAbsProgress = computed(() => hasVideo.value ? vidAbsProgress.value : gpxProgress.value)
+// Total time shown in the HUD: trimmed video window duration (ms) when video loaded
+const activeTotal = computed(() => {
+  if (hasVideo.value && videoDuration.value > 0) {
+    return (videoTrimEnd.value - videoTrimStart.value) * 1000
+  }
+  return stats.value?.totalTime ?? 0
 })
 
 // --- Event handlers ---
@@ -123,10 +188,34 @@ async function onVideoFile(file) {
 
 function onTimeUpdate({ currentTime, duration }) {
   processTimeUpdate(currentTime, duration)
+  // Stop and reset to trim start when the trim end is reached (skip during export)
+  if (!exporting.value && hasVideo.value && videoTrimEnd.value > 0 && currentTime >= videoTrimEnd.value) {
+    vidPlaying.value = false
+    videoStageRef.value?.seekTo(videoTrimStart.value)
+  }
+}
+
+function onVideoMetadata({ duration }) {
+  setVideoDuration(duration)
+}
+
+function onVideoTrimStart(val) {
+  videoTrimStart.value = val
+  videoStageRef.value?.seekTo(val)
+}
+
+function onVideoTrimEnd(val) {
+  videoTrimEnd.value = val
+  videoStageRef.value?.seekTo(val)
+}
+
+function onVideoSeek(sec) {
+  videoStageRef.value?.seekTo(sec)
 }
 
 function onVideoEnded() {
   vidPlaying.value = false
+  videoStageRef.value?.seekTo(videoTrimStart.value)
 }
 
 function onToggle() {
@@ -140,8 +229,8 @@ function onToggle() {
 function onReset() {
   if (hasVideo.value) {
     vidPlaying.value = false
-    videoStageRef.value?.seekTo(0)
-    vidAnimIdx.value = 0
+    videoStageRef.value?.seekTo(videoTrimStart.value)
+    vidAnimIdx.value = trimStart.value
     vidProgress.value = 0
   } else {
     gpxReset()
@@ -209,65 +298,16 @@ h1 {
   margin-bottom: 1rem;
 }
 
-/* --- Sync offset row --- */
-.sync-row {
+/* --- Controls + export row --- */
+.controls-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 1.25rem;
-  padding: .6rem 1rem;
-  border-radius: var(--radius-md);
-  background: var(--bg2);
-  border: 0.5px solid var(--border);
+  margin-bottom: 1.5rem;
 }
-.sync-left {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-.sync-label {
-  font-size: 12px;
-  color: var(--text2);
-  white-space: nowrap;
-}
-.auto-badge, .manual-badge {
-  font-size: 10px;
-  padding: 2px 6px;
-  border-radius: 20px;
-  font-weight: 500;
-}
-.auto-badge {
-  background: rgba(58, 143, 255, .15);
-  color: var(--accent-blue);
-  border: 0.5px solid rgba(58, 143, 255, .3);
-}
-.manual-badge {
-  background: rgba(255, 122, 58, .12);
-  color: var(--accent-orange);
-  border: 0.5px solid rgba(255, 122, 58, .25);
-}
-.offset-slider {
+.controls-row :deep(.controls) {
   flex: 1;
-  accent-color: var(--accent-blue);
-  cursor: pointer;
-  height: 3px;
+  margin-bottom: 0;
 }
-.offset-val {
-  font-size: 12px;
-  color: var(--text);
-  min-width: 52px;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-.offset-reset {
-  font-size: 14px;
-  background: none;
-  border: none;
-  color: var(--text3);
-  cursor: pointer;
-  padding: 0 4px;
-  line-height: 1;
-}
-.offset-reset:hover { color: var(--text2); }
+
 </style>

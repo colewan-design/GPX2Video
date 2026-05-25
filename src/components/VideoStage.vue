@@ -9,6 +9,7 @@
       preload="metadata"
       playsinline
       @timeupdate="handleTimeUpdate"
+      @loadedmetadata="handleLoadedMetadata"
       @ended="$emit('ended')"
     />
 
@@ -60,7 +61,7 @@ const props = defineProps({
   playing:   { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['timeupdate', 'ended'])
+const emit = defineEmits(['timeupdate', 'ended', 'loadedmetadata'])
 
 const stageRef  = ref(null)
 const canvasRef = ref(null)
@@ -92,11 +93,14 @@ function handleTimeUpdate() {
   })
 }
 
-// Expose imperative seek for parent reset button
+function handleLoadedMetadata() {
+  if (!videoRef.value) return
+  emit('loadedmetadata', { duration: videoRef.value.duration || 0 })
+}
+
 defineExpose({
-  seekTo(sec) {
-    if (videoRef.value) videoRef.value.currentTime = sec
-  },
+  seekTo(sec) { if (videoRef.value) videoRef.value.currentTime = sec },
+  getVideoEl() { return videoRef.value },
 })
 
 // --- HUD computed values ---
