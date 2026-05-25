@@ -23,6 +23,7 @@
         ref="videoStageRef"
         :points="gpxPoints"
         :anim-idx="activeAnimIdx"
+        :trim-start="trimStart"
         :progress="activeProgress"
         :total-time="activeTotal"
         :video-src="videoSrc"

@@ -168,12 +168,13 @@ const offsetDisplay = computed(() => {
 const trimRangeText = computed(() => {
   const pts = props.points
   if (!pts.length) return ''
-  const s = pts[Math.min(props.trimStart, pts.length - 1)]
-  const e = pts[Math.min(props.trimEnd,   pts.length - 1)]
+  const si = useWindow.value ? props.windowStartIdx : props.trimStart
+  const ei = useWindow.value ? props.windowEndIdx   : props.trimEnd
+  const s  = pts[Math.min(si, pts.length - 1)]
+  const e  = pts[Math.min(ei, pts.length - 1)]
   if (!s || !e) return ''
   const d1 = (s.cumDist / 1000).toFixed(1)
   const d2 = (e.cumDist / 1000).toFixed(1)
-  // Also show time if available
   if (s.time && e.time) {
     return `${d1} km → ${d2} km  ·  ${fmtTime(e.time - s.time)}`
   }
@@ -187,30 +188,33 @@ const videoWrapRef = ref(null)
 let ctx = null
 let ro  = null
 
-// Sample points for drawing performance
+// Sample points for drawing — zooms to window range when active
 const sampled = computed(() => {
   const pts = props.points
   if (!pts.length) return []
-  const step   = Math.max(1, Math.floor(pts.length / 400))
+  const from  = useWindow.value ? props.windowStartIdx : 0
+  const to    = useWindow.value ? props.windowEndIdx   : pts.length - 1
+  const count = Math.max(1, to - from)
+  const step  = Math.max(1, Math.floor(count / 400))
   const result = []
-  for (let i = 0; i < pts.length; i += step) result.push({ i, ele: pts[i].ele })
-  // Always include the last point for correct fill shape
-  const last = pts.length - 1
-  if (result[result.length - 1]?.i !== last) result.push({ i: last, ele: pts[last].ele })
+  for (let i = from; i <= to; i += step) result.push({ i: i - from, ele: pts[i].ele })
+  const lastI = to - from
+  if (result[result.length - 1]?.i !== lastI) result.push({ i: lastI, ele: pts[to].ele })
   return result
 })
 
 function draw() {
   if (!ctx || !props.points.length || !canvasRef.value) return
-  const pts = sampled.value
-  const W   = canvasRef.value.width
-  const H   = canvasRef.value.height
+  const pts  = sampled.value
+  const W    = canvasRef.value.width
+  const H    = canvasRef.value.height
+  const drawN = useWindow.value ? winN.value : N.value
 
   const eleMin = pts.reduce((a, p) => Math.min(a, p.ele), Infinity)
   const eleMax = pts.reduce((a, p) => Math.max(a, p.ele), -Infinity)
   const range  = (eleMax - eleMin) || 1
 
-  const toX = (i) => (i / N.value) * W
+  const toX = (i) => (i / drawN) * W
   const toY = (e) => H - 3 - ((e - eleMin) / range) * (H - 8)
 
   ctx.clearRect(0, 0, W, H)
@@ -267,9 +271,14 @@ onUnmounted(() => {
   window.removeEventListener('mouseup',   endVideoScrub)
   window.removeEventListener('touchmove', onVideoScrubMove)
   window.removeEventListener('touchend',  endVideoScrub)
+  window.removeEventListener('mousemove', onWindowPanMove)
+  window.removeEventListener('mouseup',   endWindowPan)
+  window.removeEventListener('touchmove', onWindowPanMove)
+  window.removeEventListener('touchend',  endWindowPan)
 })
 
 watch(() => props.points, draw)
+watch(() => [props.windowStartIdx, props.windowEndIdx], draw)
 
 // ─── Drag logic ───────────────────────────────────────────────────────────────
 let dragging = null
@@ -307,6 +316,40 @@ function endDrag() {
   window.removeEventListener('mouseup',   endDrag)
   window.removeEventListener('touchmove', onDragMove)
   window.removeEventListener('touchend',  endDrag)
+}
+
+// ─── GPX window pan (drag elevation strip to reposition the sync window) ─────
+let panAnchor = null  // { clientX, windowStartIdx }
+
+function beginWindowPan(event) {
+  if (!useWindow.value || !wrapRef.value) return
+  const clientX = event.touches ? event.touches[0].clientX : event.clientX
+  panAnchor = { clientX, windowStartIdx: props.windowStartIdx }
+  window.addEventListener('mousemove', onWindowPanMove)
+  window.addEventListener('mouseup',   endWindowPan)
+  window.addEventListener('touchmove', onWindowPanMove, { passive: false })
+  window.addEventListener('touchend',  endWindowPan)
+}
+
+function onWindowPanMove(event) {
+  if (!panAnchor || !wrapRef.value) return
+  event.preventDefault()
+  const rect    = wrapRef.value.getBoundingClientRect()
+  const clientX = event.touches ? event.touches[0].clientX : event.clientX
+  // Drag 1 full canvas width = traverse the entire GPX track
+  const deltaFrac = (clientX - panAnchor.clientX) / rect.width
+  const totalN    = Math.max(1, props.points.length - 1)
+  const newStart  = panAnchor.windowStartIdx + Math.round(deltaFrac * totalN)
+  const newFrac   = Math.max(0, Math.min(1, newStart / totalN))
+  emit('gpxWindowDrag', newFrac)
+}
+
+function endWindowPan() {
+  panAnchor = null
+  window.removeEventListener('mousemove', onWindowPanMove)
+  window.removeEventListener('mouseup',   endWindowPan)
+  window.removeEventListener('touchmove', onWindowPanMove)
+  window.removeEventListener('touchend',  endWindowPan)
 }
 
 // ─── Video trim drag ──────────────────────────────────────────────────────────
@@ -407,6 +450,8 @@ function endVideoScrub() {
   overflow: hidden;
   background: #0a0a0a;
 }
+.elev-wrap.is-draggable { cursor: grab; }
+.elev-wrap.is-draggable:active { cursor: grabbing; }
 .elev-canvas {
   display: block;
   width: 100%;

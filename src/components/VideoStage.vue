@@ -55,6 +55,7 @@ import { lerp, arrayMax, fmtTime } from '../utils/geo.js'
 const props = defineProps({
   points:    { type: Array,   required: true },
   animIdx:   { type: Number,  required: true },
+  trimStart: { type: Number,  default: 0 },
   progress:  { type: Number,  default: 0 },
   totalTime: { type: Number,  default: 0 },
   videoSrc:  { type: String,  default: null },
@@ -168,8 +169,9 @@ function draw() {
   ctx.lineWidth   = props.videoSrc ? 1 : 1.5
   ctx.stroke()
 
-  // Traveled segment colored by speed (blue → orange)
-  for (let i = 1; i <= idx && i < pts.length; i++) {
+  // Traveled segment colored by speed — start from trimStart to avoid
+  // iterating thousands of off-window points on long GPX tracks
+  for (let i = Math.max(1, props.trimStart); i <= idx && i < pts.length; i++) {
     const t = pts[i].speedSmooth / maxSpeed
     const r = Math.round(lerp(30,  255, t))
     const g = Math.round(lerp(100,  80, t))

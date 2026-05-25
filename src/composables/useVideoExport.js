@@ -65,6 +65,7 @@ export function useVideoExport() {
       target,
       video: { codec: 'avc', width: W, height: H },
       fastStart: 'in-memory',
+      firstTimestampBehavior: 'offset',
     })
 
     let encoderError = null
@@ -94,6 +95,21 @@ export function useVideoExport() {
     let frameCount      = 0
     const savedTime     = videoEl.currentTime
 
+    // Seek to trim start and wait for the seek to fully complete before
+    // registering requestVideoFrameCallback.  Without this, the first RVFC
+    // can fire while the video is still seeking, ctx.drawImage gets a null
+    // frame, and new VideoFrame throws "Cannot read properties of null
+    // (reading 'colorSpace')".
+    videoEl.muted = true
+    await new Promise(seekDone => {
+      if (Math.abs(videoEl.currentTime - vTrimStart) < 0.01) {
+        seekDone()
+      } else {
+        videoEl.addEventListener('seeked', seekDone, { once: true })
+        videoEl.currentTime = vTrimStart
+      }
+    })
+
     await new Promise((resolve, reject) => {
       function frameCallback(_, metadata) {
         if (!exporting.value || encoderError) { resolve(); return }
@@ -116,7 +132,7 @@ export function useVideoExport() {
             : 0
 
           ctx.drawImage(videoEl, 0, 0, W, H)
-          drawMapInset(ctx, W, H, gpxPoints, idx, maxSpeed)
+          drawMapInset(ctx, W, H, gpxPoints, idx, maxSpeed, trimStart)
           drawHud(ctx, W, H, point, gpxPoints, trimProgress, totalTime)
 
           // Timestamps relative to trim start so output MP4 begins at t=0
@@ -138,8 +154,6 @@ export function useVideoExport() {
         }
       }
 
-      videoEl.muted       = true
-      videoEl.currentTime = vTrimStart
       videoEl.requestVideoFrameCallback(frameCallback)
       videoEl.play().catch(reject)
     })
@@ -234,7 +248,7 @@ function findAnimIdx(gpxPoints, totalOffsetSec, videoTimeSec, duration, trimStar
 
 // ─── Canvas overlay drawing ──────────────────────────────────────────────────
 
-function drawMapInset(ctx, W, H, pts, animIdx, maxSpeed) {
+function drawMapInset(ctx, W, H, pts, animIdx, maxSpeed, segStart = 0) {
   // Scale inset relative to video height (designed at 320px CSS height)
   const s  = H / 320
   const IW = Math.round(168 * s)
@@ -272,8 +286,9 @@ function drawMapInset(ctx, W, H, pts, animIdx, maxSpeed) {
   ctx.lineWidth   = 1 * s
   ctx.stroke()
 
-  // Speed-colored traveled segment
-  for (let i = 1; i <= animIdx && i < pts.length; i++) {
+  // Speed-colored traveled segment — start from segStart so we don't iterate
+  // through thousands of off-window points on long GPX tracks
+  for (let i = Math.max(1, segStart); i <= animIdx && i < pts.length; i++) {
     const t  = pts[i].speedSmooth / maxSpeed
     const r  = Math.round(lerp(30, 255, t))
     const g  = Math.round(lerp(100, 80, t))
