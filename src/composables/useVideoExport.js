@@ -60,10 +60,37 @@ export function useVideoExport() {
     const canvas = new OffscreenCanvas(W, H)
     const ctx    = canvas.getContext('2d')
 
+    // ── Audio setup (before muxer so we know whether to include audio track) ──
+    const supportsAudio = 'AudioEncoder' in window && 'MediaStreamTrackProcessor' in window
+    const AUDIO_SAMPLE_RATE = 44100
+    const AUDIO_CHANNELS    = 2
+
+    let audioCtx     = null
+    let audioEncoder = null
+    let audioReader  = null
+
+    if (supportsAudio) {
+      try {
+        audioCtx = new AudioContext({ sampleRate: AUDIO_SAMPLE_RATE })
+        const mediaSrc  = audioCtx.createMediaElementSource(videoEl)
+        const streamDst = audioCtx.createMediaStreamDestination()
+        mediaSrc.connect(streamDst)
+        const processor = new MediaStreamTrackProcessor({
+          track: streamDst.stream.getAudioTracks()[0],
+        })
+        audioReader = processor.readable.getReader()
+      } catch {
+        audioCtx?.close()
+        audioCtx    = null
+        audioReader = null
+      }
+    }
+
     const target = new ArrayBufferTarget()
     const muxer  = new Muxer({
       target,
       video: { codec: 'avc', width: W, height: H },
+      ...(audioReader ? { audio: { codec: 'aac', sampleRate: AUDIO_SAMPLE_RATE, numberOfChannels: AUDIO_CHANNELS } } : {}),
       fastStart: 'in-memory',
       firstTimestampBehavior: 'offset',
     })
@@ -81,6 +108,19 @@ export function useVideoExport() {
       bitrate:   8_000_000,
       framerate: fps,
     })
+
+    if (audioReader) {
+      audioEncoder = new AudioEncoder({
+        output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
+        error:  (e) => { encoderError = e },
+      })
+      audioEncoder.configure({
+        codec:            'mp4a.40.2',
+        sampleRate:       AUDIO_SAMPLE_RATE,
+        numberOfChannels: AUDIO_CHANNELS,
+        bitrate:          128_000,
+      })
+    }
 
     const maxSpeed      = arrayMax(gpxPoints.map(p => p.speedSmooth)) || 1
     const frameInterval = 1 / fps
@@ -109,6 +149,27 @@ export function useVideoExport() {
         videoEl.currentTime = vTrimStart
       }
     })
+
+    // ── Audio capture loop (runs concurrently with video frame loop) ──────────
+    let audioDone = false
+    const audioLoopDone = audioReader
+      ? (async () => {
+          let firstAudioTs = null
+          try {
+            while (true) {
+              const { value: data, done } = await audioReader.read()
+              if (done || audioDone || !exporting.value) { data?.close(); break }
+              if (firstAudioTs === null) firstAudioTs = data.timestamp
+              const adjusted = copyAudioData(data, data.timestamp - firstAudioTs)
+              data.close()
+              audioEncoder.encode(adjusted)
+              adjusted.close()
+            }
+          } catch { /* reader cancelled */ } finally {
+            audioReader.cancel().catch(() => {})
+          }
+        })()
+      : Promise.resolve()
 
     await new Promise((resolve, reject) => {
       function frameCallback(_, metadata) {
@@ -161,10 +222,20 @@ export function useVideoExport() {
     videoEl.pause()
     videoEl.currentTime = savedTime
 
+    audioDone = true
+    await audioLoopDone
+
     if (encoderError) throw encoderError
 
     await encoder.flush()
     encoder.close()
+
+    if (audioEncoder) {
+      await audioEncoder.flush()
+      audioEncoder.close()
+    }
+    if (audioCtx) await audioCtx.close()
+
     muxer.finalize()
 
     // Trigger download
@@ -318,69 +389,136 @@ function drawMapInset(ctx, W, H, pts, animIdx, maxSpeed, segStart = 0) {
 function drawHud(ctx, W, H, point, pts, progress, totalTime) {
   const s = H / 320
 
-  // Dark gradient at bottom
-  const grad = ctx.createLinearGradient(0, H * 0.68, 0, H)
+  // Taller gradient — starts at 55% so the fade has breathing room
+  const grad = ctx.createLinearGradient(0, H * 0.55, 0, H)
   grad.addColorStop(0, 'transparent')
-  grad.addColorStop(1, 'rgba(0,0,0,0.82)')
+  grad.addColorStop(0.7, 'rgba(0,0,0,0.72)')
+  grad.addColorStop(1,   'rgba(0,0,0,0.92)')
   ctx.fillStyle = grad
-  ctx.fillRect(0, H * 0.68, W, H * 0.32)
-
-  const pad   = 40 * s
-  const baseY = H - 50 * s
-
-  const stats = [
-    { val: point?.speedSmooth?.toFixed(1) ?? '0.0', unit: 'km/h', label: 'SPEED' },
-    { val: String(Math.round(point?.ele ?? 0)),      unit: 'm',    label: 'ELEVATION' },
-    { val: ((point?.cumDist ?? 0) / 1000).toFixed(2), unit: 'km', label: 'DISTANCE' },
-  ]
+  ctx.fillRect(0, H * 0.55, W, H * 0.45)
 
   ctx.save()
-  ctx.textBaseline = 'alphabetic'
-  let x = pad
 
-  stats.forEach(s_ => {
-    ctx.textAlign  = 'center'
-    ctx.font       = `500 ${22 * s}px -apple-system, BlinkMacSystemFont, sans-serif`
-    ctx.fillStyle  = '#ffffff'
-    ctx.fillText(s_.val, x, baseY)
+  const padX  = Math.round(24 * s)
+  const valY  = H - Math.round(46 * s)   // value baseline
+  const lblY  = valY + Math.round(14 * s) // label baseline
 
-    ctx.font       = `${11 * s}px sans-serif`
-    ctx.fillStyle  = 'rgba(255,255,255,0.55)'
-    ctx.fillText(s_.unit, x, baseY + 14 * s)
+  const stats = [
+    { val: point?.speedSmooth?.toFixed(1) ?? '0.0', unit: 'km/h', label: 'SPEED',     accent: '#06b6d4' },
+    { val: String(Math.round(point?.ele ?? 0)),      unit: 'm',    label: 'ELEVATION', accent: '#22c55e' },
+    { val: ((point?.cumDist ?? 0) / 1000).toFixed(2), unit: 'km', label: 'DISTANCE',  accent: '#f97316' },
+  ]
 
-    ctx.font       = `${10 * s}px sans-serif`
-    ctx.fillStyle  = 'rgba(255,255,255,0.4)'
-    ctx.fillText(s_.label, x, baseY + 27 * s)
+  let x      = padX
+  const colW = Math.round(110 * s)
 
-    x += 100 * s
+  stats.forEach(({ val, unit, label, accent }) => {
+    // Colored left accent bar
+    const accentH = Math.round(28 * s)
+    ctx.fillStyle = accent
+    ctx.fillRect(x, valY - Math.round(20 * s), Math.max(2, Math.round(2 * s)), accentH)
+
+    const tx = x + Math.max(6, Math.round(8 * s))
+
+    // Value — bold, tabular
+    ctx.font         = `700 ${Math.round(20 * s)}px -apple-system, BlinkMacSystemFont, sans-serif`
+    ctx.fillStyle    = '#ffffff'
+    ctx.textAlign    = 'left'
+    ctx.textBaseline = 'alphabetic'
+    ctx.fillText(val, tx, valY)
+
+    // Unit — inline, smaller, dimmer
+    const valW = ctx.measureText(val).width
+    ctx.font      = `600 ${Math.round(9 * s)}px -apple-system, BlinkMacSystemFont, sans-serif`
+    ctx.fillStyle = 'rgba(255,255,255,0.5)'
+    ctx.fillText(unit, tx + valW + Math.round(4 * s), valY - Math.round(2 * s))
+
+    // Label — tiny caps, very muted
+    ctx.font      = `700 ${Math.round(8 * s)}px -apple-system, BlinkMacSystemFont, sans-serif`
+    ctx.fillStyle = 'rgba(255,255,255,0.3)'
+    ctx.fillText(label, tx, lblY)
+
+    x += colW
   })
 
-  // Progress bar
-  const barX = x + 10 * s
-  const barW = W - barX - pad
-  const barY = H - 36 * s
+  // ── Progress section (right of stats) ───────────────────────────────────────
+  const secX = x + Math.round(16 * s)
+  const secW = W - secX - padX
 
-  rrect(ctx, barX, barY, barW, 3 * s, 1.5 * s)
-  ctx.fillStyle = 'rgba(255,255,255,0.15)'
-  ctx.fill()
-
-  rrect(ctx, barX, barY, barW * Math.max(0, Math.min(1, progress)), 3 * s, 1.5 * s)
-  ctx.fillStyle = '#ffffff'
-  ctx.fill()
-
-  // Time labels
   const p0      = pts[0]
   const timeCur = point?.time && p0?.time ? fmtTime(point.time - p0.time) : ''
   const timeEnd = totalTime > 0 ? fmtTime(totalTime) : ''
 
-  ctx.font      = `${11 * s}px sans-serif`
-  ctx.fillStyle = 'rgba(255,255,255,0.45)'
+  ctx.font         = `600 ${Math.round(10 * s)}px -apple-system, BlinkMacSystemFont, sans-serif`
+  ctx.fillStyle    = 'rgba(255,255,255,0.45)'
+  ctx.textBaseline = 'middle'
+
+  const timeW   = ctx.measureText('0:00:00').width + Math.round(10 * s)
+  const trackX  = secX + timeW
+  const trackW  = secW - timeW * 2
+  const trackH  = Math.max(2, Math.round(3 * s))
+  const trackMY = valY - Math.round(8 * s)  // vertically centered with stat values
+
   ctx.textAlign = 'left'
-  ctx.fillText(timeCur, barX, barY - 5 * s)
+  ctx.fillText(timeCur, secX, trackMY)
   ctx.textAlign = 'right'
-  ctx.fillText(timeEnd, barX + barW, barY - 5 * s)
+  ctx.fillText(timeEnd, secX + secW, trackMY)
+
+  // Track background
+  rrect(ctx, trackX, trackMY - trackH / 2, trackW, trackH, trackH / 2)
+  ctx.fillStyle = 'rgba(255,255,255,0.15)'
+  ctx.fill()
+
+  // Filled portion
+  const fillW = trackW * Math.max(0, Math.min(1, progress))
+  if (fillW > 0) {
+    rrect(ctx, trackX, trackMY - trackH / 2, fillW, trackH, trackH / 2)
+    ctx.fillStyle = 'rgba(255,255,255,0.85)'
+    ctx.fill()
+  }
+
+  // Dot marker at playhead
+  const dotR = Math.max(3, Math.round(4 * s))
+  ctx.beginPath()
+  ctx.arc(trackX + fillW, trackMY, dotR, 0, Math.PI * 2)
+  ctx.fillStyle = '#ffffff'
+  ctx.fill()
+
+  // Watermark
+  ctx.font         = `500 ${Math.round(9 * s)}px -apple-system, BlinkMacSystemFont, sans-serif`
+  ctx.textAlign    = 'right'
+  ctx.textBaseline = 'top'
+  ctx.fillStyle    = 'rgba(255,255,255,0.25)'
+  ctx.fillText('salidumay.com', W - Math.round(10 * s), Math.round(10 * s))
 
   ctx.restore()
+}
+
+// ─── AudioData copy with adjusted timestamp ──────────────────────────────────
+// AudioData timestamps can't be mutated; we must copy the raw PCM into a new
+// object. Handles both interleaved and planar formats.
+function copyAudioData(src, timestamp) {
+  const planeCount = src.format.includes('planar') ? src.numberOfChannels : 1
+  const planes = []
+  let totalBytes = 0
+  for (let i = 0; i < planeCount; i++) {
+    const size = src.allocationSize({ planeIndex: i })
+    const buf  = new ArrayBuffer(size)
+    src.copyTo(buf, { planeIndex: i })
+    planes.push(new Uint8Array(buf))
+    totalBytes += size
+  }
+  const combined = new Uint8Array(totalBytes)
+  let off = 0
+  for (const p of planes) { combined.set(p, off); off += p.byteLength }
+  return new AudioData({
+    timestamp,
+    format:           src.format,
+    sampleRate:       src.sampleRate,
+    numberOfFrames:   src.numberOfFrames,
+    numberOfChannels: src.numberOfChannels,
+    data:             combined.buffer,
+  })
 }
 
 // Rounded-rect path helper (avoids relying on ctx.roundRect in OffscreenCanvas)

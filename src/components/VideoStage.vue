@@ -18,31 +18,27 @@
 
     <!-- HUD overlay -->
     <div class="hud">
-      <div class="hud-row">
-        <div class="hud-stat">
-          <div class="h-val">{{ speed }}</div>
-          <span class="h-unit">km/h</span>
+      <div class="hud-stats">
+        <div class="hud-stat speed-stat">
+          <div class="h-val">{{ speed }}<span class="h-unit">km/h</span></div>
           <div class="h-lbl">Speed</div>
         </div>
-        <div class="hud-stat">
-          <div class="h-val">{{ elev }}</div>
-          <span class="h-unit">m</span>
+        <div class="hud-stat elev-stat">
+          <div class="h-val">{{ elev }}<span class="h-unit">m</span></div>
           <div class="h-lbl">Elevation</div>
         </div>
-        <div class="hud-stat">
-          <div class="h-val">{{ dist }}</div>
-          <span class="h-unit">km</span>
+        <div class="hud-stat dist-stat">
+          <div class="h-val">{{ dist }}<span class="h-unit">km</span></div>
           <div class="h-lbl">Distance</div>
         </div>
-        <div class="hud-bar-wrap">
-          <div class="hud-bar-bg">
-            <div class="hud-bar-fill" :style="{ width: barPct + '%' }" />
-          </div>
-          <div class="progress-time">
-            <span>{{ timeCur }}</span>
-            <span>{{ timeTotal }}</span>
-          </div>
+      </div>
+      <div class="hud-progress">
+        <span class="hud-time">{{ timeCur }}</span>
+        <div class="hud-track">
+          <div class="hud-fill" :style="{ width: barPct + '%' }" />
+          <div class="hud-dot"  :style="{ left: barPct + '%' }" />
         </div>
+        <span class="hud-time hud-time--end">{{ timeTotal }}</span>
       </div>
     </div>
   </div>
@@ -200,6 +196,16 @@ function draw() {
     ctx.lineWidth   = 1.5
     ctx.stroke()
   }
+
+  // Watermark
+  const fontSize = props.videoSrc ? 11 : 13
+  ctx.save()
+  ctx.font      = `500 ${fontSize}px -apple-system, BlinkMacSystemFont, sans-serif`
+  ctx.textAlign = 'right'
+  ctx.textBaseline = 'top'
+  ctx.fillStyle = 'rgba(255,255,255,0.35)'
+  ctx.fillText('salidumay.com', W - 10, 10)
+  ctx.restore()
 }
 
 // ResizeObserver keeps canvas pixel dimensions in sync with CSS layout
@@ -270,16 +276,91 @@ canvas.inset {
   bottom: 0;
   left: 0;
   right: 0;
-  padding: 1rem 1.25rem;
-  background: linear-gradient(transparent, rgba(0, 0, 0, .82));
+  padding: 3rem 1.25rem 0.9rem;
+  background: linear-gradient(transparent, rgba(0,0,0,.9) 80%);
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
 }
-.hud-row { display: flex; gap: 1.5rem; align-items: flex-end; }
-.hud-stat { text-align: center; }
-.h-val  { font-size: 22px; font-weight: 500; color: #fff; line-height: 1; }
-.h-unit { font-size: 11px; color: rgba(255,255,255,.55); display: block; margin-top: 2px; }
-.h-lbl  { font-size: 10px; color: rgba(255,255,255,.4); text-transform: uppercase; letter-spacing: .05em; margin-top: 1px; }
-.hud-bar-wrap { flex: 1; }
-.hud-bar-bg   { height: 3px; background: rgba(255,255,255,.15); border-radius: 2px; }
-.hud-bar-fill { height: 3px; background: #fff; border-radius: 2px; transition: width .05s linear; }
-.progress-time { font-size: 11px; color: rgba(255,255,255,.45); display: flex; justify-content: space-between; margin-top: 4px; }
+.hud-stats {
+  display: flex;
+  align-items: flex-end;
+  gap: 1.6rem;
+}
+.hud-stat {
+  padding-left: 8px;
+  border-left: 2px solid;
+}
+.speed-stat { border-color: #06b6d4; }
+.elev-stat  { border-color: #22c55e; }
+.dist-stat  { border-color: #f97316; }
+.h-val {
+  font-size: 20px;
+  font-weight: 700;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+  text-shadow: 0 1px 6px rgba(0,0,0,1);
+}
+.h-unit {
+  font-size: 9px;
+  font-weight: 600;
+  color: rgba(255,255,255,.5);
+  text-transform: uppercase;
+  letter-spacing: .1em;
+}
+.h-lbl {
+  font-size: 8px;
+  font-weight: 700;
+  color: rgba(255,255,255,.3);
+  text-transform: uppercase;
+  letter-spacing: .14em;
+  margin-top: 5px;
+  text-shadow: 0 1px 3px rgba(0,0,0,.9);
+}
+.hud-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.hud-time {
+  font-size: 10px;
+  font-weight: 600;
+  color: rgba(255,255,255,.45);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .03em;
+  white-space: nowrap;
+  text-shadow: 0 1px 3px rgba(0,0,0,.9);
+  min-width: 38px;
+}
+.hud-time--end { text-align: right; }
+.hud-track {
+  flex: 1;
+  height: 3px;
+  background: rgba(255,255,255,.15);
+  border-radius: 2px;
+  position: relative;
+}
+.hud-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: rgba(255,255,255,.85);
+  border-radius: 2px;
+  transition: width .05s linear;
+}
+.hud-dot {
+  position: absolute;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  background: #fff;
+  border-radius: 50%;
+  transform: translate(-50%,-50%);
+  box-shadow: 0 0 6px rgba(0,0,0,.5);
+  transition: left .05s linear;
+}
 </style>
