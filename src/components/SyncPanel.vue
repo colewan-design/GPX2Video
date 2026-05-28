@@ -2,7 +2,7 @@
   <div class="sync-panel">
     <!-- Header -->
     <div class="panel-header">
-      <span class="panel-title">GPX timeline</span>
+      <span class="panel-title">Track timeline</span>
       <span v-if="points.length" class="range-info">{{ trimRangeText }}</span>
     </div>
 
@@ -46,6 +46,7 @@
     <template v-if="hasVideo && videoDuration > 0">
       <div class="panel-header" style="margin-top:.65rem">
         <span class="panel-title">Video timeline</span>
+        <span class="range-info range-info--hint">drag handles to trim</span>
         <span class="range-info">{{ videoTrimRangeText }}</span>
       </div>
       <div class="video-wrap" ref="videoWrapRef" @mousedown.prevent="beginVideoScrub" @touchstart.prevent="beginVideoScrub">
@@ -75,9 +76,9 @@
     <!-- Offset row — only with video + timestamps -->
     <div v-if="hasVideo && hasTimestamps" class="offset-row">
       <div class="offset-left">
-        <span class="sync-label">Sync</span>
-        <span v-if="autoDetected" class="badge auto">Auto-detected</span>
-        <span v-else class="badge manual">Manual</span>
+        <span class="sync-label">GPX–Video sync</span>
+        <span v-if="autoDetected" class="badge auto" title="Offset was detected automatically from timestamps">Auto</span>
+        <span v-else class="badge manual" title="Offset was adjusted manually">Manual</span>
       </div>
       <input
         class="offset-slider"
@@ -87,9 +88,13 @@
         step="0.5"
         :value="manualOffsetSec"
         @input="$emit('update:manualOffsetSec', Number($event.target.value))"
+        title="Slide to align your GPX track with the video. Positive = GPX starts later than video."
       />
       <span class="offset-val">{{ offsetDisplay }}</span>
-      <button class="offset-reset" title="Reset offset" @click="$emit('update:manualOffsetSec', 0)">↺</button>
+      <button class="offset-reset" title="Reset to auto-detected offset" @click="$emit('update:manualOffsetSec', 0)">↺</button>
+    </div>
+    <div v-if="hasVideo && hasTimestamps" class="offset-hint">
+      Drag the slider if the speed/map overlay appears out of sync with your footage.
     </div>
   </div>
 </template>
@@ -211,9 +216,9 @@ function draw() {
   if (useWindow.value && props.windowEndIdx > props.windowStartIdx) {
     const wx1 = (props.windowStartIdx / N.value) * W
     const wx2 = (props.windowEndIdx   / N.value) * W
-    ctx.fillStyle = 'rgba(58,143,255,0.10)'
+    ctx.fillStyle = 'rgba(255,214,10,0.07)'
     ctx.fillRect(wx1, 0, wx2 - wx1, H)
-    ctx.strokeStyle = 'rgba(58,143,255,0.35)'
+    ctx.strokeStyle = 'rgba(255,214,10,0.30)'
     ctx.lineWidth = 1
     ctx.beginPath()
     ctx.moveTo(wx1, 0); ctx.lineTo(wx1, H)
@@ -231,7 +236,7 @@ function draw() {
   ctx.lineTo(W, H)
   ctx.lineTo(0, H)
   ctx.closePath()
-  ctx.fillStyle = 'rgba(58,143,255,0.12)'
+  ctx.fillStyle = 'rgba(255,214,10,0.06)'
   ctx.fill()
 
   // Elevation line
@@ -241,7 +246,7 @@ function draw() {
     const y = toY(p.ele)
     si === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
   })
-  ctx.strokeStyle = 'rgba(58,143,255,0.55)'
+  ctx.strokeStyle = 'rgba(255,214,10,0.50)'
   ctx.lineWidth   = 1.5
   ctx.lineJoin    = 'round'
   ctx.stroke()
@@ -435,11 +440,11 @@ function endVideoScrub() {
 
 <style scoped>
 .sync-panel {
-  background: var(--bg2);
-  border: 0.5px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: .75rem 1rem 0;
-  margin-bottom: 1.25rem;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: .65rem .9rem 0;
+  margin-bottom: 0;
   overflow: hidden;
 }
 
@@ -452,15 +457,16 @@ function endVideoScrub() {
 }
 .panel-title { font-size: 11px; font-weight: 500; color: var(--text2); text-transform: uppercase; letter-spacing: .04em; }
 .range-info  { font-size: 11px; color: var(--text3); }
+.range-info--hint { color: var(--text3); opacity: 0.6; font-style: italic; margin-right: auto; margin-left: 6px; }
 
 /* Elevation area */
 .elev-wrap {
   position: relative;
-  height: 72px;
+  height: 60px;
   cursor: default;
   border-radius: var(--radius-sm);
   overflow: hidden;
-  background: #0a0a0a;
+  background: var(--bg);
 }
 .elev-wrap.is-draggable { cursor: grab; }
 .elev-wrap.is-draggable:active { cursor: grabbing; }
@@ -487,8 +493,9 @@ function endVideoScrub() {
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 1.5px;
-  background: rgba(255,255,255,0.7);
+  width: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
   transform: translateX(-50%);
   pointer-events: none;
   z-index: 6;
@@ -499,10 +506,11 @@ function endVideoScrub() {
   bottom: 2px;
   left: 50%;
   transform: translateX(-50%);
-  width: 7px;
-  height: 7px;
-  background: #fff;
+  width: 8px;
+  height: 8px;
+  background: var(--accent);
   border-radius: 50%;
+  box-shadow: 0 0 6px var(--accent-glow);
 }
 
 /* Trim handles */
@@ -540,8 +548,8 @@ function endVideoScrub() {
 }
 .handle-start::after { border-radius: 3px 3px 0 0; }
 .handle-end::after   { border-radius: 3px 3px 0 0; }
-.handle:hover::before { background: #fff; }
-.handle:hover::after  { background: var(--accent-blue); }
+.handle:hover::before { background: var(--accent); }
+.handle:hover::after  { background: var(--accent); }
 
 /* Video timeline strip */
 .video-wrap {
@@ -588,7 +596,7 @@ function endVideoScrub() {
 }
 .offset-slider {
   flex: 1;
-  accent-color: var(--accent-blue);
+  accent-color: var(--accent);
   cursor: pointer;
 }
 .offset-val {
@@ -608,4 +616,11 @@ function endVideoScrub() {
   line-height: 1;
 }
 .offset-reset:hover { color: var(--text2); }
+
+.offset-hint {
+  font-size: 11px;
+  color: var(--text3);
+  padding: .35rem 0 .5rem;
+  line-height: 1.5;
+}
 </style>

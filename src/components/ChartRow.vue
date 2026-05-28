@@ -1,11 +1,17 @@
 <template>
   <div class="chart-row">
-    <div class="chart-card">
-      <div class="chart-label">Elevation profile</div>
+    <div class="chart-track">
+      <div class="chart-track-header">
+        <span class="track-dot elev-dot" />
+        <span class="track-label">Elevation</span>
+      </div>
       <div class="chart-wrap"><canvas ref="elevRef" /></div>
     </div>
-    <div class="chart-card">
-      <div class="chart-label">Speed over distance</div>
+    <div class="chart-track">
+      <div class="chart-track-header">
+        <span class="track-dot speed-dot" />
+        <span class="track-label">Speed</span>
+      </div>
       <div class="chart-wrap"><canvas ref="speedRef" /></div>
     </div>
   </div>
@@ -19,9 +25,9 @@ const props = defineProps({
   points: { type: Array, required: true },
 })
 
-const elevRef = ref(null)
+const elevRef  = ref(null)
 const speedRef = ref(null)
-let elevChart = null
+let elevChart  = null
 let speedChart = null
 
 const CHART_OPTS = {
@@ -31,18 +37,21 @@ const CHART_OPTS = {
   scales: {
     x: { display: false },
     y: {
-      ticks: { font: { size: 10 }, color: '#666', maxTicksLimit: 4 },
-      grid: { color: 'rgba(255,255,255,.06)' },
+      ticks: { font: { size: 9, family: 'Inter, sans-serif' }, color: '#3a3a4a', maxTicksLimit: 3 },
+      grid: { color: 'rgba(255,255,255,.04)' },
       border: { display: false },
     },
   },
   animation: false,
+  elements: {
+    line: { tension: 0.35 },
+  },
 }
 
 function buildCharts(pts) {
-  const step = Math.max(1, Math.floor(pts.length / 200))
+  const step    = Math.max(1, Math.floor(pts.length / 300))
   const sampled = pts.filter((_, i) => i % step === 0)
-  const labels = sampled.map(p => (p.cumDist / 1000).toFixed(2))
+  const labels  = sampled.map(p => (p.cumDist / 1000).toFixed(2))
 
   if (elevChart) elevChart.destroy()
   elevChart = new Chart(elevRef.value, {
@@ -51,11 +60,11 @@ function buildCharts(pts) {
       labels,
       datasets: [{
         data: sampled.map(p => p.ele),
-        borderColor: '#3a8fff',
-        backgroundColor: 'rgba(58,143,255,.12)',
+        borderColor: '#ffd60a',
+        backgroundColor: 'rgba(255,214,10,0.07)',
         fill: true,
         pointRadius: 0,
-        tension: 0.3,
+        tension: 0.35,
         borderWidth: 1.5,
       }],
     },
@@ -69,11 +78,11 @@ function buildCharts(pts) {
       labels,
       datasets: [{
         data: sampled.map(p => p.speedSmooth.toFixed(1)),
-        borderColor: '#ff7a3a',
-        backgroundColor: 'rgba(255,122,58,.1)',
+        borderColor: '#22c55e',
+        backgroundColor: 'rgba(34,197,94,0.07)',
         fill: true,
         pointRadius: 0,
-        tension: 0.3,
+        tension: 0.35,
         borderWidth: 1.5,
       }],
     },
@@ -81,10 +90,7 @@ function buildCharts(pts) {
   })
 }
 
-// Bug fix: watch points (not deep) — triggered when gpxPoints.value is replaced
-watch(() => props.points, pts => {
-  if (pts.length) buildCharts(pts)
-})
+watch(() => props.points, pts => { if (pts.length) buildCharts(pts) })
 
 onUnmounted(() => {
   elevChart?.destroy()
@@ -96,24 +102,38 @@ onUnmounted(() => {
 .chart-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  margin-bottom: 1.5rem;
+  gap: 1px;
+  background: var(--border);
 }
-.chart-card {
+@media (max-width: 600px) {
+  .chart-row { grid-template-columns: 1fr; }
+}
+.chart-track {
   background: var(--bg2);
-  border-radius: var(--radius-lg);
-  padding: 1rem;
-  border: 0.5px solid var(--border);
+  padding: .6rem .75rem .5rem;
 }
-.chart-label {
-  font-size: 11px;
-  color: var(--text2);
-  margin-bottom: .5rem;
-  font-weight: 500;
-  letter-spacing: .02em;
+.chart-track-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: .4rem;
+}
+.track-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.elev-dot  { background: #ffd60a; box-shadow: 0 0 5px rgba(255,214,10,.5); }
+.speed-dot { background: #22c55e; box-shadow: 0 0 5px rgba(34,197,94,.5); }
+.track-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--text3);
 }
 .chart-wrap {
   position: relative;
-  height: 130px;
+  height: 60px;
 }
 </style>

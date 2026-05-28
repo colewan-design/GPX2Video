@@ -7,11 +7,20 @@
     @dragleave="dragging = false"
     @drop.prevent="onDrop"
   >
-    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-      <path d="M3 12a9 9 0 1 0 18 0 9 9 0 0 0-18 0M12 8v8M8 12l4-4 4 4" stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>
-    <p>Drop your GPX file here or <span class="link">click to upload</span></p>
-    <p class="hint">Strava, Garmin, Komoot, or any standard .gpx file</p>
+    <div class="dz-inner">
+      <div class="dz-icon-wrap">
+        <svg class="dz-icon" viewBox="0 0 48 48" fill="none">
+          <circle cx="24" cy="24" r="22" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 3" opacity=".35"/>
+          <path d="M24 14v14M17 21l7-7 7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M14 33h20" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity=".5"/>
+        </svg>
+      </div>
+      <div class="dz-copy">
+        <p class="dz-title">Drop your GPX file</p>
+        <p class="dz-sub">Strava · Garmin · Komoot · any <strong>.gpx</strong></p>
+      </div>
+      <span class="dz-btn">Browse file</span>
+    </div>
     <input ref="fileInput" type="file" accept=".gpx" @change="onPick" />
   </div>
 </template>
@@ -38,33 +47,81 @@ function onPick(e) {
 
 <style scoped>
 .drop-zone {
-  border: 1.5px dashed var(--border2);
+  border: 1px dashed var(--border2);
   border-radius: var(--radius-lg);
-  padding: 3rem 1rem;
-  text-align: center;
+  padding: 2.5rem 1.5rem;
   cursor: pointer;
-  transition: background .2s, border-color .2s;
-  background: var(--bg2);
+  transition: border-color .2s, background .2s;
+  background: var(--glass-bg);
   user-select: none;
+  position: relative;
+  overflow: hidden;
+}
+.drop-zone::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at 50% 0%, rgba(255,214,10,0.04) 0%, transparent 70%);
+  pointer-events: none;
 }
 .drop-zone:hover,
 .drop-zone.dragging {
+  border-color: var(--accent);
+  background: rgba(255,214,10,0.04);
+}
+.drop-zone.dragging {
+  box-shadow: 0 0 0 1px var(--accent), 0 0 30px rgba(255,214,10,0.08);
+}
+.dz-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  position: relative;
+  z-index: 1;
+}
+.dz-icon-wrap {
+  width: 60px;
+  height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: var(--bg3);
-  border-color: var(--accent-blue);
+  border-radius: 50%;
+  border: 1px solid var(--border2);
 }
-.icon {
-  width: 40px;
-  height: 40px;
+.dz-icon {
+  width: 36px;
+  height: 36px;
+  color: var(--accent);
+}
+.dz-copy { text-align: center; }
+.dz-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: .35rem;
+}
+.dz-sub {
+  font-size: 12px;
   color: var(--text2);
-  margin: 0 auto .75rem;
-  display: block;
+  line-height: 1.5;
 }
-p {
-  color: var(--text2);
-  font-size: 14px;
-  line-height: 1.6;
+.dz-sub strong { color: var(--accent); font-weight: 600; }
+.dz-btn {
+  display: inline-block;
+  padding: .45rem 1.25rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--accent-semi);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  transition: background .15s, box-shadow .15s;
 }
-.link { color: var(--accent-blue); }
-.hint { font-size: 12px; color: var(--text3); margin-top: .3rem; }
+.drop-zone:hover .dz-btn {
+  background: var(--accent-dim);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
 input { display: none; }
 </style>

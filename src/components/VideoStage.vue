@@ -1,11 +1,11 @@
 <template>
-  <div class="stage" :class="{ 'has-video': !!videoSrc }" ref="stageRef">
+  <div class="stage" :class="{ 'has-video': !!videoSrc }" ref="stageRef" :style="stageStyle">
     <video
       v-if="videoSrc"
       ref="videoRef"
       class="video-bg"
       :src="videoSrc"
-      :style="filter && filter !== 'none' ? { filter } : {}"
+      :style="glReady ? { opacity: 0, pointerEvents: 'none' } : {}"
       preload="metadata"
       playsinline
       @timeupdate="handleTimeUpdate"
@@ -13,11 +13,22 @@
       @ended="$emit('ended')"
     />
 
+    <!-- WebGL output canvas — replaces video display when shader is ready -->
+    <canvas
+      v-if="videoSrc"
+      ref="glCanvasRef"
+      class="video-bg gl-canvas"
+      :style="{ opacity: glReady ? 1 : 0 }"
+    />
+
     <!-- Map canvas: full stage in map-only mode, small inset top-right over video -->
     <canvas ref="canvasRef" :class="{ inset: !!videoSrc }" />
 
+    <!-- ── Video HUD overlay root (scales up in portrait mode) ───────────── -->
+    <div class="hud-overlay-root" v-if="videoSrc && points.length">
+
     <!-- ── Full HUD (video mode only) ────────────────────────────────────── -->
-    <template v-if="videoSrc && points.length">
+    <template v-if="overlayFormat === 'classic'">
 
       <!-- Top progress bar -->
       <div class="hud-prog-bar">
@@ -42,7 +53,7 @@
       <!-- Top-center info: temperature + distance -->
       <div class="hud-top-info">
         <div class="hud-temp-block" v-if="tempC !== null">
-          <svg class="hud-icon-sm" viewBox="0 0 24 24"><path fill="#f59e0b" d="M15 13V5a3 3 0 0 0-6 0v8a5 5 0 1 0 6 0z"/></svg>
+          <svg class="hud-icon-sm" viewBox="0 0 24 24"><path fill="currentColor" d="M15 13V5a3 3 0 0 0-6 0v8a5 5 0 1 0 6 0z"/></svg>
           <span>{{ tempC }}°C</span>
         </div>
         <div class="hud-dist-block">
@@ -58,13 +69,13 @@
       <div class="hud-panel-left">
         <div class="hud-stat-row">
           <svg class="hud-stat-icon" viewBox="0 0 24 24">
-            <path fill="#f59e0b" d="M12 4a8 8 0 1 0 0 16A8 8 0 0 0 12 4zm0 2a6 6 0 1 1 0 12A6 6 0 0 1 12 6zm0 2a4 4 0 1 0 0 8 4 4 0 0 0 0-8z"/>
+            <path fill="currentColor" d="M12 4a8 8 0 1 0 0 16A8 8 0 0 0 12 4zm0 2a6 6 0 1 1 0 12A6 6 0 0 1 12 6zm0 2a4 4 0 1 0 0 8 4 4 0 0 0 0-8z"/>
           </svg>
           <span class="hud-stat-val">{{ cadDisplay }}</span>
         </div>
         <div class="hud-stat-row">
           <svg class="hud-stat-icon" viewBox="0 0 24 24">
-            <path fill="#f59e0b" d="M12 2 9 8h6L12 2zm0 20 3-6H9l3 6zM2 12l6-3v6L2 12zm20 0-6 3V9l6 3z"/>
+            <path fill="currentColor" d="M12 2 9 8h6L12 2zm0 20 3-6H9l3 6zM2 12l6-3v6L2 12zm20 0-6 3V9l6 3z"/>
           </svg>
           <div class="hud-stat-multi">
             <div>Gain:&nbsp;{{ elevGainMNow }} m</div>
@@ -73,13 +84,13 @@
         </div>
         <div class="hud-stat-row">
           <svg class="hud-stat-icon" viewBox="0 0 24 24">
-            <path fill="#f59e0b" d="M20.57 14.86 22 13.43 20.57 12 17 15.57 8.43 7 12 3.43 10.57 2 9.14 3.43 7.71 2 5.57 4.14 4.14 2.71 2.71 4.14l1.43 1.43L2 7.71l1.43 1.43L2 10.57 3.43 12 7 8.43 15.57 17 12 20.57 13.43 22l1.43-1.43L16.29 22l2.14-2.14 1.43 1.43 1.43-1.43-1.43-1.43L22 16.29l-1.43-1.43z"/>
+            <path fill="currentColor" d="M20.57 14.86 22 13.43 20.57 12 17 15.57 8.43 7 12 3.43 10.57 2 9.14 3.43 7.71 2 5.57 4.14 4.14 2.71 2.71 4.14l1.43 1.43L2 7.71l1.43 1.43L2 10.57 3.43 12 7 8.43 15.57 17 12 20.57 13.43 22l1.43-1.43L16.29 22l2.14-2.14 1.43 1.43 1.43-1.43-1.43-1.43L22 16.29l-1.43-1.43z"/>
           </svg>
           <span class="hud-stat-val">{{ powerDisplay }}</span>
         </div>
         <div class="hud-stat-row">
           <svg class="hud-stat-icon" viewBox="0 0 24 24">
-            <path fill="#f59e0b" d="M13.49 5.48c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm-3.6 13.9 1-4.4 2.1 2v6h2v-7.5l-2.1-2 .6-3c1.3 1.5 3.3 2.5 5.5 2.5v-2c-1.9 0-3.5-1-4.3-2.4l-1-1.6c-.4-.6-1-1-1.7-1-.3 0-.5.1-.8.1l-5.2 2.2v4.7h2v-3.4l1.8-.7-1.6 8.1-4.9-1-.4 2 7 1.4z"/>
+            <path fill="currentColor" d="M13.49 5.48c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm-3.6 13.9 1-4.4 2.1 2v6h2v-7.5l-2.1-2 .6-3c1.3 1.5 3.3 2.5 5.5 2.5v-2c-1.9 0-3.5-1-4.3-2.4l-1-1.6c-.4-.6-1-1-1.7-1-.3 0-.5.1-.8.1l-5.2 2.2v4.7h2v-3.4l1.8-.7-1.6 8.1-4.9-1-.4 2 7 1.4z"/>
           </svg>
           <span class="hud-stat-val">{{ paceDisplay }}/km</span>
         </div>
@@ -89,19 +100,19 @@
       <div class="hud-panel-right">
         <div class="hud-stat-row-r">
           <span class="hud-stat-val-r">{{ kcalDisplay }} kcal</span>
-          <svg class="hud-stat-icon-r" viewBox="0 0 24 24"><path fill="#f59e0b" d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>
+          <svg class="hud-stat-icon-r" viewBox="0 0 24 24"><path fill="currentColor" d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>
         </div>
         <div class="hud-stat-row-r">
           <span class="hud-stat-val-r">{{ gradeDisplay }}</span>
-          <svg class="hud-stat-icon-r" viewBox="0 0 24 24"><path fill="#f59e0b" d="M14 6l-1-2H5v17h2v-7h5l1 2h7V6h-6zm4 8h-4l-1-2H7V6h5l1 2h5v6z"/></svg>
+          <svg class="hud-stat-icon-r" viewBox="0 0 24 24"><path fill="currentColor" d="M14 6l-1-2H5v17h2v-7h5l1 2h7V6h-6zm4 8h-4l-1-2H7V6h5l1 2h5v6z"/></svg>
         </div>
         <div class="hud-stat-row-r">
           <span class="hud-stat-val-r">-- - --</span>
-          <svg class="hud-stat-icon-r" viewBox="0 0 24 24"><path fill="#f59e0b" d="M12 15.5A3.5 3.5 0 0 1 8.5 12 3.5 3.5 0 0 1 12 8.5a3.5 3.5 0 0 1 3.5 3.5 3.5 3.5 0 0 1-3.5 3.5m7.43-2.92c.04-.33.07-.67.07-1.08s-.03-.75-.07-1.08l2.32-1.8c.21-.16.27-.46.13-.7l-2.2-3.81c-.14-.24-.42-.32-.66-.24l-2.74 1.1c-.57-.44-1.18-.81-1.86-1.08L14.8 2.28C14.74 2.02 14.5 1.83 14.22 1.83h-4.43c-.28 0-.52.19-.57.46L8.88 4.9c-.68.27-1.29.64-1.86 1.08L4.28 4.88c-.25-.09-.52 0-.66.24L1.42 8.93c-.14.24-.09.54.13.7l2.32 1.8C3.83 11.76 3.8 12.1 3.8 12.5s.03.74.07 1.08l-2.32 1.8c-.21.16-.27.46-.13.7l2.2 3.81c.14.24.42.32.66.24l2.74-1.1c.57.44 1.18.81 1.86 1.08l.36 2.63c.05.26.29.45.57.45h4.43c.28 0 .52-.19.57-.46l.36-2.62c.68-.27 1.29-.64 1.86-1.08l2.74 1.1c.25.09.52 0 .66-.24l2.2-3.81c.14-.24.09-.54-.13-.7l-2.32-1.8z"/></svg>
+          <svg class="hud-stat-icon-r" viewBox="0 0 24 24"><path fill="currentColor" d="M12 15.5A3.5 3.5 0 0 1 8.5 12 3.5 3.5 0 0 1 12 8.5a3.5 3.5 0 0 1 3.5 3.5 3.5 3.5 0 0 1-3.5 3.5m7.43-2.92c.04-.33.07-.67.07-1.08s-.03-.75-.07-1.08l2.32-1.8c.21-.16.27-.46.13-.7l-2.2-3.81c-.14-.24-.42-.32-.66-.24l-2.74 1.1c-.57-.44-1.18-.81-1.86-1.08L14.8 2.28C14.74 2.02 14.5 1.83 14.22 1.83h-4.43c-.28 0-.52.19-.57.46L8.88 4.9c-.68.27-1.29.64-1.86 1.08L4.28 4.88c-.25-.09-.52 0-.66.24L1.42 8.93c-.14.24-.09.54.13.7l2.32 1.8C3.83 11.76 3.8 12.1 3.8 12.5s.03.74.07 1.08l-2.32 1.8c-.21.16-.27.46-.13.7l2.2 3.81c.14.24.42.32.66.24l2.74-1.1c.57.44 1.18.81 1.86 1.08l.36 2.63c.05.26.29.45.57.45h4.43c.28 0 .52-.19.57-.46l.36-2.62c.68-.27 1.29-.64 1.86-1.08l2.74 1.1c.25.09.52 0 .66-.24l2.2-3.81c.14-.24.09-.54-.13-.7l-2.32-1.8z"/></svg>
         </div>
         <div class="hud-stat-row-r">
           <span class="hud-stat-val-r">{{ hrDisplay }} bpm</span>
-          <svg class="hud-stat-icon-r" viewBox="0 0 24 24"><path fill="#f59e0b" d="m12 21.35-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+          <svg class="hud-stat-icon-r" viewBox="0 0 24 24"><path fill="currentColor" d="m12 21.35-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
         </div>
       </div>
 
@@ -116,7 +127,7 @@
               stroke-dasharray="169.65 226.19" stroke-linecap="round"
               transform="rotate(-135 50 47)" />
             <circle cx="50" cy="47" r="36" fill="none"
-              stroke="#f59e0b" stroke-width="5"
+              :stroke="overlayColor" stroke-width="5"
               :stroke-dasharray="speedDash"
               stroke-linecap="round"
               transform="rotate(-135 50 47)" />
@@ -154,7 +165,7 @@
               stroke-dasharray="169.65 226.19" stroke-linecap="round"
               transform="rotate(-135 50 47)" />
             <circle cx="50" cy="47" r="36" fill="none"
-              stroke="#f59e0b" stroke-width="5"
+              :stroke="overlayColor" stroke-width="5"
               :stroke-dasharray="rpmDash"
               stroke-linecap="round"
               transform="rotate(-135 50 47)" />
@@ -169,9 +180,259 @@
       </div><!-- /hud-bottom-row -->
     </template>
 
-    <!-- ── Simple HUD (map-only mode) ───────────────────────────────────── -->
+    <!-- ── Minimal HUD (video mode) ─────────────────────────────────────── -->
+    <template v-if="overlayFormat === 'minimal'">
+      <div class="hud-prog-bar">
+        <div class="hud-prog-fill" :style="{ width: barPct + '%' }" />
+      </div>
+      <div class="minimal-bottom">
+        <div class="mini-card">
+          <div class="mini-val">{{ speedKmhGauge }}</div>
+          <div class="mini-unit">km/h</div>
+          <div class="mini-lbl">Speed</div>
+        </div>
+        <div class="mini-divider" />
+        <div class="mini-card">
+          <div class="mini-val">{{ currentElevM }}</div>
+          <div class="mini-unit">m</div>
+          <div class="mini-lbl">Elevation</div>
+        </div>
+        <div class="mini-divider" />
+        <div class="mini-card">
+          <div class="mini-val">{{ distKmHud }}</div>
+          <div class="mini-unit">km</div>
+          <div class="mini-lbl">Distance</div>
+        </div>
+        <div class="mini-divider" />
+        <div class="mini-card">
+          <div class="mini-val">{{ gradeDisplay }}</div>
+          <div class="mini-unit">&nbsp;</div>
+          <div class="mini-lbl">Grade</div>
+        </div>
+        <template v-if="hrDisplay !== '--'">
+          <div class="mini-divider" />
+          <div class="mini-card">
+            <div class="mini-val">{{ hrDisplay }}</div>
+            <div class="mini-unit">bpm</div>
+            <div class="mini-lbl">Heart Rate</div>
+          </div>
+        </template>
+      </div>
+    </template>
 
-    <div class="hud hud-simple" v-else-if="!videoSrc && points.length">
+    <!-- ── GoPro HUD (video mode) ─────────────────────────────────────── -->
+    <template v-if="overlayFormat === 'gopro'">
+      <div class="hud-prog-bar">
+        <div class="hud-prog-fill" :style="{ width: barPct + '%' }" />
+      </div>
+
+      <!-- GPS coordinates top-left -->
+      <div class="gopro-coords">{{ latStr }}&nbsp;&nbsp;&nbsp;{{ lonStr }}</div>
+
+      <!-- Compass bearing top-center -->
+      <div class="gopro-bearing">
+        <svg class="gopro-compass" viewBox="0 0 20 24">
+          <polygon points="10,1 13.5,15 10,12.5 6.5,15" :fill="overlayColor"/>
+          <polygon points="10,23 13.5,9 10,11.5 6.5,9" fill="rgba(255,255,255,0.3)"/>
+        </svg>
+        <span class="gopro-bearing-val">{{ bearingDeg }}°{{ bearingCard }}</span>
+      </div>
+
+      <!-- Left panel: slope + elevation -->
+      <div class="gopro-left-panel">
+        <div class="gopro-stat-block">
+          <div class="gopro-stat-head">
+            <svg class="gopro-icon" viewBox="0 0 20 18">
+              <polygon points="10,1 19,17 1,17" fill="none" stroke="rgba(255,255,255,0.75)" stroke-width="1.8"/>
+              <line x1="10" y1="9" x2="10" y2="17" stroke="rgba(255,255,255,0.75)" stroke-width="1.5"/>
+            </svg>
+            <span class="gopro-stat-lbl">SLOPE</span>
+          </div>
+          <div class="gopro-stat-val">{{ slopeDisplay }}</div>
+        </div>
+        <div class="gopro-stat-block">
+          <div class="gopro-stat-head">
+            <svg class="gopro-icon" viewBox="0 0 20 18">
+              <polygon points="10,1 19,17 1,17" fill="rgba(255,255,255,0.75)"/>
+            </svg>
+            <span class="gopro-stat-lbl">ELEVATION</span>
+          </div>
+          <div class="gopro-stat-val">{{ currentElevM }} <span class="gopro-stat-unit">M</span></div>
+        </div>
+      </div>
+
+      <!-- Bottom-center large speed gauge -->
+      <div class="gopro-gauge-wrap">
+        <svg viewBox="0 0 160 110" class="gopro-gauge-svg">
+          <circle cx="80" cy="82" r="60" fill="none"
+            stroke="rgba(255,255,255,0.12)" stroke-width="6"
+            stroke-dasharray="282.74 376.99" stroke-linecap="round"
+            transform="rotate(-135 80 82)" />
+          <circle cx="80" cy="82" r="60" fill="none"
+            :stroke="overlayColor" stroke-width="6"
+            :stroke-dasharray="goProSpeedDash"
+            stroke-linecap="round"
+            transform="rotate(-135 80 82)" />
+          <text x="9"  y="106" fill="rgba(255,255,255,0.45)" font-size="9" font-family="sans-serif">0</text>
+          <text x="136" y="106" fill="rgba(255,255,255,0.45)" font-size="9" font-family="sans-serif">60</text>
+          <text x="80" y="91" fill="white" font-size="30" font-weight="700"
+            text-anchor="middle" font-family="sans-serif">{{ speedKmhGauge }}</text>
+        </svg>
+        <div class="gopro-speed-unit">KM/H</div>
+      </div>
+    </template>
+
+    <!-- ── Sport HUD (video mode) ───────────────────────────────────────── -->
+    <template v-if="overlayFormat === 'sport'">
+      <div class="hud-prog-bar"><div class="hud-prog-fill" :style="{ width: barPct + '%' }"/></div>
+
+      <!-- Top-left: distance -->
+      <div class="sport-top-left">
+        <div class="sport-dist-val">{{ distKmHud }}</div>
+        <div class="sport-dist-unit">KM</div>
+      </div>
+
+      <!-- Top-right: GPS coordinates (under the canvas inset) -->
+      <div class="sport-coords">
+        <div class="sport-coord-line">{{ latStr }}</div>
+        <div class="sport-coord-line">{{ lonStr }}</div>
+      </div>
+
+      <!-- Center-left: slope -->
+      <div class="sport-slope-block">
+        <div class="sport-slope-lbl">SLOPE</div>
+        <div class="sport-slope-val">{{ gradeRaw }}</div>
+        <div class="sport-slope-unit">%</div>
+      </div>
+
+      <!-- Bottom-left: circular speed gauge -->
+      <div class="sport-gauge-wrap">
+        <svg viewBox="0 0 160 160" class="sport-gauge-svg">
+          <!-- Dark circle background -->
+          <circle cx="80" cy="80" r="74" fill="rgba(0,12,28,0.8)" />
+          <!-- Tick marks around arc (18 ticks every 15°) -->
+          <g :stroke="ocFaint" stroke-width="1">
+            <line v-for="i in 19" :key="i"
+              :x1="80 + 66 * Math.cos(((225 + (i-1)*15 - 90) * Math.PI / 180))"
+              :y1="80 + 66 * Math.sin(((225 + (i-1)*15 - 90) * Math.PI / 180))"
+              :x2="80 + 72 * Math.cos(((225 + (i-1)*15 - 90) * Math.PI / 180))"
+              :y2="80 + 72 * Math.sin(((225 + (i-1)*15 - 90) * Math.PI / 180))"
+            />
+          </g>
+          <!-- Background arc -->
+          <circle cx="80" cy="80" r="62" fill="none"
+            :stroke="ocFaint" stroke-width="4"
+            stroke-dasharray="292.17 97.39" stroke-linecap="round"
+            transform="rotate(135 80 80)" />
+          <!-- Value arc -->
+          <circle cx="80" cy="80" r="62" fill="none"
+            :stroke="overlayColor" stroke-width="4"
+            :stroke-dasharray="sportSpeedDash"
+            stroke-linecap="round"
+            transform="rotate(135 80 80)" />
+          <!-- Arc end-cap glow dot -->
+          <text x="28"  y="138" :fill="ocDim" font-size="9"  text-anchor="middle" font-family="sans-serif">0</text>
+          <text x="80"  y="22"  :fill="ocDim" font-size="9"  text-anchor="middle" font-family="sans-serif">90</text>
+          <text x="132" y="138" :fill="ocDim" font-size="9"  text-anchor="middle" font-family="sans-serif">180</text>
+          <!-- SPEED label -->
+          <text x="80" y="63" :fill="overlayColor" font-size="9" font-weight="700" text-anchor="middle" font-family="sans-serif" letter-spacing="2">SPEED</text>
+          <!-- Speed number -->
+          <text x="80" y="97" fill="white" font-size="34" font-weight="700" text-anchor="middle" font-family="sans-serif">{{ speedKmhGauge }}</text>
+          <!-- KM/H label -->
+          <text x="80" y="114" :fill="overlayColor" font-size="9" font-weight="700" text-anchor="middle" font-family="sans-serif" letter-spacing="2">KM/H</text>
+        </svg>
+      </div>
+    </template>
+
+    <!-- ── Cycling HUD (video mode) ───────────────────────────────────────── -->
+    <template v-if="overlayFormat === 'cycling'">
+      <div class="hud-prog-bar"><div class="hud-prog-fill" :style="{ width: barPct + '%' }"/></div>
+
+      <!-- Top bar: ELEVATION | compass | TOTAL DISTANCE -->
+      <div class="cyc-top-bar">
+        <div class="cyc-stat cyc-stat--left">
+          <div class="cyc-stat-lbl">ELEVATION</div>
+          <div class="cyc-stat-val">{{ currentElevM }} <span class="cyc-stat-unit">M</span></div>
+        </div>
+
+        <!-- Compass rose -->
+        <div class="cyc-compass">
+          <svg viewBox="0 0 40 40" class="cyc-compass-svg">
+            <circle cx="20" cy="20" r="18" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="1"/>
+            <text x="20" y="10" fill="rgba(255,255,255,0.5)" font-size="6" text-anchor="middle" font-family="sans-serif" font-weight="700">N</text>
+            <text x="20" y="36" fill="rgba(255,255,255,0.3)" font-size="5" text-anchor="middle" font-family="sans-serif">S</text>
+            <text x="8"  y="23" fill="rgba(255,255,255,0.3)" font-size="5" text-anchor="middle" font-family="sans-serif">W</text>
+            <text x="33" y="23" fill="rgba(255,255,255,0.3)" font-size="5" text-anchor="middle" font-family="sans-serif">E</text>
+            <!-- North arrow -->
+            <polygon points="20,7 22,17 20,15 18,17" :fill="overlayColor"/>
+            <polygon points="20,33 22,23 20,25 18,23" fill="rgba(255,255,255,0.3)"/>
+          </svg>
+        </div>
+
+        <div class="cyc-stat cyc-stat--right">
+          <div class="cyc-stat-lbl">TOTAL DISTANCE</div>
+          <div class="cyc-stat-val">{{ distKmHud }} <span class="cyc-stat-unit">KM</span></div>
+        </div>
+      </div>
+
+      <!-- Center: arc speed gauge (left) + slope (right) -->
+      <div class="cyc-center">
+        <!-- Speed gauge (D-shape arc, bottom cropped) -->
+        <div class="cyc-gauge-wrap">
+          <div class="cyc-gauge-label">SPEED</div>
+          <svg viewBox="0 0 160 95" class="cyc-gauge-svg">
+            <!-- Background arc -->
+            <circle cx="80" cy="105" r="65" fill="none"
+              :stroke="ocFaint" stroke-width="8"
+              stroke-dasharray="306.31 102.10" stroke-linecap="round"
+              transform="rotate(135 80 105)" />
+            <!-- Value arc -->
+            <circle cx="80" cy="105" r="65" fill="none"
+              :stroke="overlayColor" stroke-width="8"
+              :stroke-dasharray="cyclingSpeedDash"
+              stroke-linecap="round"
+              transform="rotate(135 80 105)" />
+            <!-- Min/max labels -->
+            <text x="14" y="92" :fill="ocDim" font-size="9" text-anchor="middle" font-family="sans-serif">0</text>
+            <text x="146" y="92" :fill="ocDim" font-size="9" text-anchor="middle" font-family="sans-serif">60</text>
+            <!-- Speed number -->
+            <text x="80" y="72" fill="white" font-size="46" font-weight="700" text-anchor="middle" font-family="sans-serif">{{ speedKmhGauge }}</text>
+          </svg>
+          <div class="cyc-gauge-unit">KM/H</div>
+        </div>
+
+        <!-- Slope (right) -->
+        <div class="cyc-slope-block">
+          <div class="cyc-slope-lbl">SLOPE</div>
+          <div class="cyc-slope-val">{{ gradeRaw }}</div>
+          <div class="cyc-slope-unit">%</div>
+        </div>
+      </div>
+
+      <!-- Bottom: GPS coordinates -->
+      <div class="cyc-gps">
+        <span class="cyc-gps-val">{{ lonStr }}</span>
+        <span class="cyc-gps-val">{{ latStr }}</span>
+      </div>
+    </template>
+
+
+    <!-- ── Location name ────────────────────────────────────────────────── -->
+    <div v-if="locationName" class="hud-location" :style="locationStyle">
+      <svg viewBox="0 0 12 16" fill="currentColor" class="hud-location-pin"><path d="M6 0a5 5 0 0 1 5 5c0 4-5 11-5 11S1 9 1 5a5 5 0 0 1 5-5zm0 3a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>
+      <span>{{ locationName }}</span>
+    </div>
+
+    <!-- ── Logo watermark ──────────────────────────────────────────────── -->
+    <div class="logo-wm">
+      <img src="/icon.svg" class="logo-wm-icon" />
+      <span class="logo-wm-text">gpx2video</span>
+    </div>
+
+    </div><!-- /hud-overlay-root -->
+
+    <!-- ── Simple HUD (map-only mode) ───────────────────────────────────── -->
+    <div class="hud hud-simple" v-if="!videoSrc && points.length">
       <div class="hud-stats">
         <div class="hud-stat speed-stat">
           <div class="h-val">{{ speedKph }}<span class="h-unit">km/h</span></div>
@@ -209,26 +470,78 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { lerp, arrayMax, fmtTime } from '../utils/geo.js'
+import { useVideoShader } from '../composables/useVideoShader.js'
+import { SHADER_PARAMS } from '../utils/filters.js'
 
 const props = defineProps({
-  points:    { type: Array,   required: true },
-  animIdx:   { type: Number,  required: true },
-  trimStart: { type: Number,  default: 0 },
-  progress:  { type: Number,  default: 0 },
-  totalTime: { type: Number,  default: 0 },
-  videoSrc:  { type: String,  default: null },
-  playing:   { type: Boolean, default: false },
-  filter:    { type: String,  default: 'none' },
+  points:        { type: Array,   required: true },
+  animIdx:       { type: Number,  required: true },
+  trimStart:     { type: Number,  default: 0 },
+  progress:      { type: Number,  default: 0 },
+  totalTime:     { type: Number,  default: 0 },
+  videoSrc:      { type: String,  default: null },
+  playing:       { type: Boolean, default: false },
+  filterId:      { type: String,  default: 'none' },
+  overlayFormat: { type: String,  default: 'classic' },
+  overlayColor:  { type: String,  default: '#f59e0b' },
+  playerAspect:  { type: String,  default: '16:9' },
+  locationName:  { type: String,  default: '' },
 })
 
 const emit = defineEmits(['timeupdate', 'ended', 'loadedmetadata'])
 
+// ── Accent-color helpers ──────────────────────────────────────────────────────
+function parseOc(hex) {
+  const h = (hex || '#f59e0b').replace('#', '')
+  return {
+    r: parseInt(h.slice(0,2), 16) || 245,
+    g: parseInt(h.slice(2,4), 16) || 158,
+    b: parseInt(h.slice(4,6), 16) || 11,
+  }
+}
+const ocRgb   = computed(() => parseOc(props.overlayColor))
+const ocDim   = computed(() => { const {r,g,b} = ocRgb.value; return `rgba(${r},${g},${b},0.55)` })
+const ocFaint = computed(() => { const {r,g,b} = ocRgb.value; return `rgba(${r},${g},${b},0.15)` })
+// Scale HUD elements up in portrait so they stay proportional to stage height.
+// Baseline is 16:9. For portrait ratios (h > w) this will be > 1.
+const hudScale = computed(() => {
+  const [w, h] = props.playerAspect.split(':').map(Number)
+  if (!w || !h) return 1
+  const baseline = Math.sqrt(9 / 16)   // 16:9 reference
+  const current  = Math.sqrt(h / w)
+  return Math.max(1, current / baseline)
+})
+
+const stageStyle = computed(() => {
+  const {r,g,b} = ocRgb.value
+  const style = {
+    '--oc':        props.overlayColor,
+    '--oc-dim':    `rgba(${r},${g},${b},0.55)`,
+    '--oc-semi':   `rgba(${r},${g},${b},0.45)`,
+    '--oc-faint':  `rgba(${r},${g},${b},0.15)`,
+    '--hud-scale': hudScale.value.toFixed(4),
+  }
+  if (props.videoSrc) {
+    style.aspectRatio = videoNativeW.value && videoNativeH.value
+      ? `${videoNativeW.value} / ${videoNativeH.value}`
+      : props.playerAspect.replace(':', ' / ')
+  }
+  return style
+})
+
 const stageRef     = ref(null)
 const canvasRef    = ref(null)
+const glCanvasRef  = ref(null)
 const videoRef     = ref(null)
 const elevChartRef = ref(null)
+const videoNativeW = ref(0)
+const videoNativeH = ref(0)
+const glReady      = ref(false)
+
+const shader = useVideoShader()
+let roStage  = null
 
 let ctx      = null
 let elevCtx  = null
@@ -243,15 +556,42 @@ watch(() => props.playing, async (val) => {
   if (val) { try { await videoRef.value.play() } catch (_) {} }
   else videoRef.value.pause()
 })
-watch(() => props.videoSrc, () => { if (videoRef.value) videoRef.value.currentTime = 0 })
+watch(() => props.videoSrc, () => {
+  if (videoRef.value) videoRef.value.currentTime = 0
+  if (!props.videoSrc) {
+    videoNativeW.value = 0; videoNativeH.value = 0
+    shader.stopLoop(); shader.destroy()
+    glReady.value = false
+  }
+})
 
 function handleTimeUpdate() {
   if (!videoRef.value) return
   emit('timeupdate', { currentTime: videoRef.value.currentTime, duration: videoRef.value.duration || 0 })
 }
-function handleLoadedMetadata() {
+async function handleLoadedMetadata() {
   if (!videoRef.value) return
+  videoNativeW.value = videoRef.value.videoWidth
+  videoNativeH.value = videoRef.value.videoHeight
   emit('loadedmetadata', { duration: videoRef.value.duration || 0 })
+
+  // Initialise WebGL — wait for v-if canvas to appear in DOM
+  await nextTick()
+  if (glCanvasRef.value && !glReady.value) {
+    const ok = shader.setup(glCanvasRef.value, videoRef.value)
+    if (ok) {
+      glReady.value = true
+      shader.setFilter(SHADER_PARAMS[props.filterId] ?? SHADER_PARAMS.none)
+      shader.startLoop()
+      // Also set up a ResizeObserver on the stage so the GL canvas stays crisp
+      roStage?.disconnect()
+      roStage = new ResizeObserver(entries => {
+        const { width, height } = entries[0].contentRect
+        shader.resize(Math.round(width), Math.round(height))
+      })
+      roStage.observe(stageRef.value)
+    }
+  }
 }
 defineExpose({
   seekTo(sec) { if (videoRef.value) videoRef.value.currentTime = sec },
@@ -334,6 +674,78 @@ const kcalDisplay = computed(() => {
 })
 const tempC = computed(() => {
   const t = current.value?.atemp; return t != null ? Math.round(t) : null
+})
+
+// ── GoPro / Minimal extra computed values ────────────────────────────────────
+const currentElevM = computed(() => Math.round(current.value?.ele ?? 0))
+
+const slopeDisplay = computed(() => {
+  const g = current.value?.grade ?? 0
+  return `${Math.round(Math.abs(g))}%`
+})
+
+const latStr = computed(() => {
+  const lat = current.value?.lat
+  if (lat == null) return '--'
+  const d = Math.floor(Math.abs(lat))
+  const m = Math.floor((Math.abs(lat) - d) * 60)
+  const s = (((Math.abs(lat) - d) * 60 - m) * 60).toFixed(2)
+  return `${d}°${String(m).padStart(2,'0')}'${s}" ${lat >= 0 ? 'N' : 'S'}`
+})
+const lonStr = computed(() => {
+  const lon = current.value?.lon
+  if (lon == null) return '--'
+  const d = Math.floor(Math.abs(lon))
+  const m = Math.floor((Math.abs(lon) - d) * 60)
+  const s = (((Math.abs(lon) - d) * 60 - m) * 60).toFixed(2)
+  return `${d}°${String(m).padStart(2,'0')}'${s}" ${lon >= 0 ? 'E' : 'W'}`
+})
+
+const bearingData = computed(() => {
+  const pts = props.points, idx = props.animIdx
+  if (!pts.length || idx < 2) return { deg: 0, cardinal: 'N' }
+  const look = Math.min(10, idx)
+  const p0 = pts[idx - look], p1 = pts[idx]
+  const dLon = (p1.lon - p0.lon) * Math.PI / 180
+  const lat0 = p0.lat * Math.PI / 180
+  const lat1 = p1.lat * Math.PI / 180
+  const y = Math.sin(dLon) * Math.cos(lat1)
+  const x = Math.cos(lat0) * Math.sin(lat1) - Math.sin(lat0) * Math.cos(lat1) * Math.cos(dLon)
+  let deg = Math.atan2(y, x) * 180 / Math.PI
+  deg = (deg + 360) % 360
+  const cards = ['N','NE','E','SE','S','SW','W','NW']
+  return { deg: Math.round(deg), cardinal: cards[Math.round(deg / 45) % 8] }
+})
+const bearingDeg  = computed(() => bearingData.value.deg)
+const bearingCard = computed(() => bearingData.value.cardinal)
+
+// GoPro gauge: r=60, 270° arc
+const GOPRO_CIRC = 376.99, GOPRO_ARC = 282.74
+const goProSpeedDash = computed(() => {
+  const p = Math.max(0, Math.min(1, (parseFloat(speedKmhGauge.value) || 0) / 60))
+  const f = GOPRO_ARC * p
+  return `${f.toFixed(2)} ${(GOPRO_CIRC - f).toFixed(2)}`
+})
+
+// Sport gauge: r=62, 270° arc, max 180 km/h
+const SPORT_CIRC = 389.56, SPORT_ARC = 292.17
+const sportSpeedDash = computed(() => {
+  const p = Math.max(0, Math.min(1, (parseFloat(speedKmhGauge.value) || 0) / 180))
+  const f = SPORT_ARC * p
+  return `${f.toFixed(2)} ${(SPORT_CIRC - f).toFixed(2)}`
+})
+
+// Cycling gauge: r=65, 270° arc, max 60 km/h
+const CYCLING_CIRC = 408.41, CYCLING_ARC = 306.31
+const cyclingSpeedDash = computed(() => {
+  const p = Math.max(0, Math.min(1, (parseFloat(speedKmhGauge.value) || 0) / 60))
+  const f = CYCLING_ARC * p
+  return `${f.toFixed(2)} ${(CYCLING_CIRC - f).toFixed(2)}`
+})
+
+const gradeRaw = computed(() => {
+  const g = current.value?.grade ?? 0
+  return g.toFixed(2)
 })
 
 // ── Arc gauge dash (270° sweep, r=38, circ≈238.76) ──────────────────────────
@@ -608,9 +1020,11 @@ function drawElevChart() {
   for (let i = 0; i < pts.length; i++) elevCtx.lineTo(xOf(i), yOf(pts[i].ele))
   elevCtx.lineTo(xOf(pts.length-1), H)
   elevCtx.closePath()
+  const oc = props.overlayColor
+  const { r: ocR, g: ocG, b: ocB } = parseOc(oc)
   const grad = elevCtx.createLinearGradient(0, pT, 0, H)
-  grad.addColorStop(0, 'rgba(245,158,11,0.28)')
-  grad.addColorStop(1, 'rgba(245,158,11,0.04)')
+  grad.addColorStop(0, `rgba(${ocR},${ocG},${ocB},0.28)`)
+  grad.addColorStop(1, `rgba(${ocR},${ocG},${ocB},0.04)`)
   elevCtx.fillStyle = grad
   elevCtx.fill()
 
@@ -619,7 +1033,7 @@ function drawElevChart() {
   for (let i = 0; i < pts.length; i++) {
     i===0 ? elevCtx.moveTo(xOf(0),yOf(pts[0].ele)) : elevCtx.lineTo(xOf(i),yOf(pts[i].ele))
   }
-  elevCtx.strokeStyle = 'rgba(245,158,11,0.4)'
+  elevCtx.strokeStyle = `rgba(${ocR},${ocG},${ocB},0.4)`
   elevCtx.lineWidth = 1.5
   elevCtx.stroke()
 
@@ -628,7 +1042,7 @@ function drawElevChart() {
   for (let i = 0; i <= idx && i < pts.length; i++) {
     i===0 ? elevCtx.moveTo(xOf(0),yOf(pts[0].ele)) : elevCtx.lineTo(xOf(i),yOf(pts[i].ele))
   }
-  elevCtx.strokeStyle = '#f59e0b'
+  elevCtx.strokeStyle = oc
   elevCtx.lineWidth = 2
   elevCtx.stroke()
 
@@ -636,7 +1050,7 @@ function drawElevChart() {
   if (idx < pts.length) {
     const cx = xOf(idx), cy = yOf(pts[idx].ele)
     elevCtx.beginPath(); elevCtx.arc(cx, cy, 5, 0, Math.PI*2)
-    elevCtx.fillStyle = '#fbbf24'; elevCtx.fill()
+    elevCtx.fillStyle = oc; elevCtx.fill()
     const eleM = Math.round(pts[idx].ele)
     // Cap font size: derive from canvas width (always correct) not height
     const fs = Math.min(16, Math.max(8, Math.round(W * 0.052)))
@@ -664,8 +1078,16 @@ onMounted(() => {
   document.addEventListener('keydown', onKeyDown)
 })
 
+watch(() => props.filterId, id => {
+  if (glReady.value) {
+    shader.setFilter(SHADER_PARAMS[id] ?? SHADER_PARAMS.none)
+    shader.renderFrame()
+  }
+})
+
 onUnmounted(() => {
-  ro?.disconnect(); roElev?.disconnect()
+  ro?.disconnect(); roElev?.disconnect(); roStage?.disconnect()
+  shader.destroy()
   document.removeEventListener('fullscreenchange', onFullscreenChange)
   document.removeEventListener('keydown', onKeyDown)
 })
@@ -687,9 +1109,33 @@ watch(elevChartRef, (canvas) => {
   roElev.observe(canvas)
 })
 
-watch(() => props.points,   () => { setupProjection(); draw(); drawElevChart() })
-watch(() => props.animIdx,  () => { draw(); drawElevChart() })
-watch(() => props.videoSrc, () => { setupProjection(); draw() })
+watch(() => props.points,       () => { setupProjection(); draw(); drawElevChart() })
+watch(() => props.animIdx,      () => { draw(); drawElevChart() })
+watch(() => props.videoSrc,     () => { setupProjection(); draw() })
+watch(() => props.overlayColor, () => { drawElevChart() })
+
+// ── Location pill position: empty space per layout ────────────────────────────
+const locationStyle = computed(() => {
+  switch (props.overlayFormat) {
+    case 'classic':
+      // Center gap between the left/right stat panels, just above the 30% bottom row
+      return { bottom: '31%', left: '24%', top: 'auto', right: 'auto' }
+    case 'minimal':
+      // Upper-left is free — only the progress bar is at top
+      return { top: '10px', left: '8px', bottom: 'auto', right: 'auto' }
+    case 'gopro':
+      // Bottom-right — speed gauge is bottom-center, left panel is left side
+      return { bottom: '8%', right: '2%', top: 'auto', left: 'auto' }
+    case 'sport':
+      // Bottom-right — circular gauge is bottom-left
+      return { bottom: '8%', right: '2%', top: 'auto', left: 'auto' }
+    case 'cycling':
+      // Bottom-right — GPS coords are bottom-left
+      return { bottom: '4%', right: '2%', top: 'auto', left: 'auto' }
+    default:
+      return { bottom: '8px', left: '8px', top: 'auto', right: 'auto' }
+  }
+})
 </script>
 
 <style scoped>
@@ -699,13 +1145,10 @@ watch(() => props.videoSrc, () => { setupProjection(); draw() })
   border-radius: var(--radius-lg);
   overflow: hidden;
   position: relative;
-  height: 320px;
-  margin-bottom: 1rem;
+  margin-bottom: 0;
   border: 0.5px solid var(--border);
-  /* Enable container queries so all children can use cqw units */
   container-type: inline-size;
 }
-.stage.has-video { height: auto; aspect-ratio: 16 / 9; }
 
 /* Fullscreen mode */
 .stage:fullscreen,
@@ -719,6 +1162,18 @@ watch(() => props.videoSrc, () => { setupProjection(); draw() })
 .stage:-webkit-full-screen .fullscreen-btn { opacity: 1; }
 
 /* Fullscreen toggle button */
+/* ── Logo watermark ─────────────────────────────────────────────────────────── */
+.logo-wm {
+  position: absolute;
+  bottom: 8px; right: 44px;
+  display: flex; align-items: center; gap: 4px;
+  opacity: 0.4;
+  pointer-events: none;
+  z-index: 20;
+}
+.logo-wm-icon { width: clamp(14px, 2cqw, 20px); height: clamp(14px, 2cqw, 20px); border-radius: 3px; display: block; }
+.logo-wm-text { font-size: clamp(7px, 0.9cqw, 10px); font-weight: 600; color: white; text-shadow: 0 1px 4px rgba(0,0,0,.9); letter-spacing: .04em; }
+
 .fullscreen-btn {
   position: absolute;
   bottom: 8px; right: 8px;
@@ -741,7 +1196,24 @@ watch(() => props.videoSrc, () => { setupProjection(); draw() })
 .video-bg {
   position: absolute; inset: 0;
   width: 100%; height: 100%;
-  object-fit: contain; background: #000;
+  object-fit: cover; background: #000;
+}
+.gl-canvas {
+  pointer-events: none;
+  /* object-fit handled by cover-UV computation in the shader */
+  object-fit: unset;
+}
+
+/* Scales all HUD elements proportionally when aspect ratio is portrait.
+   Children with position:absolute see the reduced coordinate space;
+   after transform they appear correctly positioned within the full stage. */
+.hud-overlay-root {
+  position: absolute;
+  top: 0; left: 0;
+  width: calc(100% / var(--hud-scale, 1));
+  height: calc(100% / var(--hud-scale, 1));
+  transform: scale(var(--hud-scale, 1));
+  transform-origin: top left;
 }
 
 /* ── Map canvas ─────────────────────────────────────────────────────────────── */
@@ -763,7 +1235,7 @@ canvas.inset {
   background: rgba(255,255,255,.12);
 }
 .hud-prog-fill {
-  height: 100%; background: #f59e0b;
+  height: 100%; background: var(--oc);
   transition: width .05s linear;
 }
 
@@ -796,7 +1268,7 @@ canvas.inset {
   white-space: nowrap; overflow: hidden;
 }
 .lap-current {
-  color: #fbbf24; font-weight: 700;
+  color: var(--oc); font-weight: 700;
   font-size: clamp(9px, 1.3cqw, 14px);
 }
 .lap-n { opacity: .7; }
@@ -848,7 +1320,7 @@ canvas.inset {
 .hud-stat-row   { display: flex; align-items: center; gap: clamp(3px, 0.5cqw, 7px); }
 .hud-stat-row-r { display: flex; align-items: center; gap: clamp(3px, 0.5cqw, 7px); justify-content: flex-end; }
 
-.hud-stat-icon, .hud-stat-icon-r {
+.hud-stat-icon, .hud-stat-icon-r { color: var(--oc);
   width: clamp(14px, 2cqw, 22px);
   height: clamp(14px, 2cqw, 22px);
   flex-shrink: 0;
@@ -913,17 +1385,272 @@ canvas.inset {
 }
 .zone-bar-fill {
   width: 100%;
-  background: rgba(245,158,11,.45);
+  background: var(--oc-semi);
   transition: height .3s ease;
 }
-.zone-col.zone-active .zone-bar-fill { background: #f59e0b; }
-.zone-col.zone-active .zone-bar-wrap { border-color: #f59e0b; }
+.zone-col.zone-active .zone-bar-fill { background: var(--oc); }
+.zone-col.zone-active .zone-bar-wrap { border-color: var(--oc); }
 .zone-range {
   font-size: clamp(5px, 0.65cqw, 8px);
   color: rgba(255,255,255,.35);
   white-space: nowrap; font-variant-numeric: tabular-nums;
 }
-.zone-col.zone-active .zone-range { color: #fbbf24; }
+.zone-col.zone-active .zone-range { color: var(--oc); }
+
+/* ── Minimal HUD ────────────────────────────────────────────────────────────── */
+.minimal-bottom {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  display: flex; align-items: stretch; justify-content: center;
+  padding: 2.5rem 5% 1.2%;
+  background: linear-gradient(transparent, rgba(0,0,0,0.82) 60%);
+  gap: 0;
+}
+.mini-card {
+  flex: 1;
+  display: flex; flex-direction: column; align-items: center;
+  gap: 0;
+  min-width: 0;
+}
+.mini-val {
+  font-size: clamp(16px, 2.8cqw, 34px);
+  font-weight: 700; color: #fff;
+  font-variant-numeric: tabular-nums; line-height: 1.1;
+  letter-spacing: -.02em;
+  text-shadow: 0 1px 6px rgba(0,0,0,1);
+  white-space: nowrap;
+}
+.mini-unit {
+  font-size: clamp(7px, 0.9cqw, 11px);
+  font-weight: 600; color: rgba(255,255,255,.5);
+  text-transform: uppercase; letter-spacing: .08em;
+  margin-top: 1px;
+}
+.mini-lbl {
+  font-size: clamp(7px, 0.8cqw, 10px);
+  font-weight: 700; color: rgba(255,255,255,.35);
+  text-transform: uppercase; letter-spacing: .12em;
+  margin-top: 4px;
+  text-shadow: 0 1px 3px rgba(0,0,0,.9);
+}
+.mini-divider {
+  width: 0.5px; background: rgba(255,255,255,.18);
+  align-self: stretch; margin: 0 clamp(6px, 1.2cqw, 18px);
+  flex-shrink: 0;
+}
+
+/* ── GoPro HUD ───────────────────────────────────────────────────────────────── */
+.gopro-coords {
+  position: absolute; top: 10px; left: 50%;
+  transform: translateX(-50%);
+  font-size: clamp(7px, 0.85cqw, 10px);
+  font-weight: 500; color: rgba(255,255,255,.55);
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 4px rgba(0,0,0,.9);
+  white-space: nowrap; letter-spacing: .04em;
+}
+.gopro-bearing {
+  position: absolute; top: 22px; left: 50%;
+  transform: translateX(-50%);
+  display: flex; align-items: center; gap: clamp(4px, 0.7cqw, 9px);
+}
+.gopro-compass { width: clamp(14px, 1.8cqw, 22px); height: clamp(17px, 2.2cqw, 26px); flex-shrink: 0; }
+.gopro-bearing-val {
+  font-size: clamp(13px, 1.9cqw, 24px);
+  font-weight: 700; color: #fff;
+  text-shadow: 0 1px 6px rgba(0,0,0,1);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.gopro-left-panel {
+  position: absolute; top: 30%; left: 2%;
+  display: flex; flex-direction: column;
+  gap: clamp(10px, 1.5cqw, 22px);
+}
+.gopro-stat-block { display: flex; flex-direction: column; gap: 2px; }
+.gopro-stat-head  { display: flex; align-items: center; gap: clamp(4px, 0.6cqw, 8px); }
+.gopro-icon { width: clamp(12px, 1.5cqw, 18px); height: clamp(11px, 1.4cqw, 16px); flex-shrink: 0; }
+.gopro-stat-lbl {
+  font-size: clamp(7px, 0.85cqw, 11px);
+  font-weight: 700; color: rgba(255,255,255,.65);
+  text-transform: uppercase; letter-spacing: .1em;
+  text-shadow: 0 1px 4px rgba(0,0,0,.9);
+}
+.gopro-stat-val {
+  font-size: clamp(14px, 2.1cqw, 26px);
+  font-weight: 700; color: #fff;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 6px rgba(0,0,0,1);
+  padding-left: clamp(16px, 2.1cqw, 26px);
+}
+.gopro-stat-unit { font-size: .65em; color: rgba(255,255,255,.65); font-weight: 600; }
+.gopro-gauge-wrap {
+  position: absolute; bottom: 0; left: 50%;
+  transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center;
+  width: clamp(100px, 18cqw, 220px);
+  padding-bottom: 0.5%;
+}
+.gopro-gauge-svg { width: 100%; height: auto; display: block; }
+.gopro-speed-unit {
+  font-size: clamp(7px, 0.85cqw, 11px);
+  font-weight: 700; color: rgba(255,255,255,.45);
+  text-transform: uppercase; letter-spacing: .12em;
+  margin-top: -2px;
+  text-shadow: 0 1px 3px rgba(0,0,0,.9);
+}
+
+/* ── Sport HUD ───────────────────────────────────────────────────────────────── */
+.sport-top-left {
+  position: absolute; top: 10px; left: 2%;
+  display: flex; align-items: baseline; gap: clamp(3px, 0.4cqw, 6px);
+}
+.sport-dist-val {
+  font-size: clamp(18px, 2.8cqw, 34px); font-weight: 700; color: #fff;
+  font-variant-numeric: tabular-nums; line-height: 1;
+  text-shadow: 0 1px 6px rgba(0,0,0,1);
+}
+.sport-dist-unit {
+  font-size: clamp(8px, 1cqw, 13px); font-weight: 700;
+  color: var(--oc); text-transform: uppercase; letter-spacing: .1em;
+}
+.sport-coords {
+  position: absolute; top: 10px; right: 24%;
+  text-align: right;
+}
+.sport-coord-line {
+  font-size: clamp(6px, 0.78cqw, 10px); font-weight: 500;
+  color: var(--oc-dim); font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 4px rgba(0,0,0,.9); line-height: 1.5;
+  letter-spacing: .03em;
+}
+.sport-slope-block {
+  position: absolute; top: 42%; left: 3%;
+}
+.sport-slope-lbl {
+  font-size: clamp(7px, 0.85cqw, 11px); font-weight: 700;
+  color: rgba(255,255,255,.6); text-transform: uppercase; letter-spacing: .12em;
+  text-shadow: 0 1px 4px rgba(0,0,0,.9);
+}
+.sport-slope-val {
+  font-size: clamp(18px, 3cqw, 38px); font-weight: 700; color: #fff;
+  font-variant-numeric: tabular-nums; line-height: 1.1;
+  text-shadow: 0 1px 6px rgba(0,0,0,1); letter-spacing: -.01em;
+  margin-top: 2px;
+}
+.sport-slope-unit {
+  font-size: clamp(8px, 1cqw, 13px); font-weight: 700;
+  color: var(--oc); text-transform: uppercase; letter-spacing: .1em;
+  margin-top: 2px;
+}
+.sport-gauge-wrap {
+  position: absolute; bottom: 1%; left: 1%;
+  width: clamp(90px, 16cqw, 200px);
+}
+.sport-gauge-svg { width: 100%; height: auto; display: block; }
+
+/* ── Cycling HUD ─────────────────────────────────────────────────────────────── */
+.cyc-top-bar {
+  position: absolute; top: 8px; left: 2%; right: 2%;
+  display: flex; align-items: flex-start; justify-content: space-between;
+  padding: 0 0.5%;
+}
+.cyc-stat { display: flex; flex-direction: column; gap: 1px; }
+.cyc-stat--right { align-items: flex-end; }
+.cyc-stat-lbl {
+  font-size: clamp(6px, 0.78cqw, 10px); font-weight: 700;
+  color: var(--oc); text-transform: uppercase; letter-spacing: .12em;
+  text-shadow: 0 1px 4px rgba(0,0,0,.9);
+}
+.cyc-stat-val {
+  font-size: clamp(14px, 2.1cqw, 26px); font-weight: 700; color: #fff;
+  font-variant-numeric: tabular-nums; line-height: 1.1;
+  text-shadow: 0 1px 6px rgba(0,0,0,1);
+}
+.cyc-stat-unit {
+  font-size: .55em; font-weight: 600; color: rgba(255,255,255,.55);
+}
+.cyc-compass { display: flex; align-items: center; justify-content: center; }
+.cyc-compass-svg { width: clamp(28px, 3.8cqw, 48px); height: clamp(28px, 3.8cqw, 48px); }
+
+.cyc-center {
+  position: absolute; top: 28%; bottom: 15%; left: 2%; right: 2%;
+  display: flex; align-items: center; gap: 0;
+}
+.cyc-gauge-wrap {
+  display: flex; flex-direction: column; align-items: center;
+  width: clamp(100px, 17cqw, 210px); flex-shrink: 0;
+}
+.cyc-gauge-label {
+  font-size: clamp(7px, 0.85cqw, 11px); font-weight: 700;
+  color: var(--oc-dim); text-transform: uppercase; letter-spacing: .12em;
+  text-shadow: 0 1px 4px rgba(0,0,0,.9); margin-bottom: 2px;
+}
+.cyc-gauge-svg { width: 100%; height: auto; display: block; }
+.cyc-gauge-unit {
+  font-size: clamp(7px, 0.85cqw, 11px); font-weight: 700;
+  color: var(--oc-dim); text-transform: uppercase; letter-spacing: .12em;
+  text-shadow: 0 1px 4px rgba(0,0,0,.9); margin-top: 2px;
+}
+.cyc-slope-block {
+  flex: 1; padding-left: clamp(12px, 2cqw, 28px);
+  display: flex; flex-direction: column; gap: 2px;
+}
+.cyc-slope-lbl {
+  font-size: clamp(7px, 0.85cqw, 11px); font-weight: 700;
+  color: rgba(255,255,255,.65); text-transform: uppercase; letter-spacing: .1em;
+  text-shadow: 0 1px 4px rgba(0,0,0,.9);
+}
+.cyc-slope-val {
+  font-size: clamp(22px, 3.8cqw, 48px); font-weight: 700; color: #fff;
+  font-variant-numeric: tabular-nums; line-height: 1;
+  text-shadow: 0 1px 6px rgba(0,0,0,1); letter-spacing: -.02em;
+}
+.cyc-slope-unit {
+  font-size: clamp(9px, 1.1cqw, 14px); font-weight: 700; color: var(--oc);
+  text-shadow: 0 1px 4px rgba(0,0,0,.9);
+}
+.cyc-gps {
+  position: absolute; bottom: 4%; left: 2%;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.cyc-gps-val {
+  font-size: clamp(7px, 0.88cqw, 11px); font-weight: 500;
+  color: rgba(255,255,255,.6); font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 4px rgba(0,0,0,.9); letter-spacing: .04em;
+}
+
+/* ── Location pill ──────────────────────────────────────────────────────────── */
+.hud-location {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: clamp(3px, 0.4cqw, 5px);
+  background: rgba(0,0,0,0.55);
+  border: 0.5px solid rgba(255,255,255,0.18);
+  border-radius: 20px;
+  padding: clamp(2px, 0.35cqw, 4px) clamp(5px, 0.8cqw, 10px) clamp(2px, 0.35cqw, 4px) clamp(4px, 0.6cqw, 7px);
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+  z-index: 20;
+  max-width: 45%;
+}
+.hud-location-pin {
+  width: clamp(7px, 0.9cqw, 11px);
+  height: clamp(9px, 1.2cqw, 15px);
+  flex-shrink: 0;
+  color: var(--oc);
+  opacity: 0.85;
+}
+.hud-location span {
+  font-size: clamp(7px, 0.85cqw, 11px);
+  font-weight: 600;
+  color: rgba(255,255,255,0.8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+  letter-spacing: 0.02em;
+}
 
 /* ── Simple HUD (map-only) ──────────────────────────────────────────────────── */
 .hud.hud-simple {

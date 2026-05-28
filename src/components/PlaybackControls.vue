@@ -1,31 +1,41 @@
 <template>
   <div class="controls">
-    <button :disabled="disabled" @click="$emit('toggle')">
-      <svg v-if="!playing" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-      <svg v-else viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6zm8-14v14h4V5z"/></svg>
-      {{ playing ? 'Pause' : 'Play' }}
+    <button class="ctrl-btn ctrl-play" :disabled="disabled" @click="$emit('toggle')">
+      <svg v-if="!playing" viewBox="0 0 20 20" fill="currentColor">
+        <path d="M6.3 2.8A1.5 1.5 0 0 0 4 4.1v11.8a1.5 1.5 0 0 0 2.3 1.3l9.4-5.9a1.5 1.5 0 0 0 0-2.6L6.3 2.8z"/>
+      </svg>
+      <svg v-else viewBox="0 0 20 20" fill="currentColor">
+        <path d="M5 3h3a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM12 3h3a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/>
+      </svg>
+      <span>{{ playing ? 'Pause' : 'Play' }}</span>
     </button>
-    <button :disabled="disabled" @click="$emit('reset')">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 4v6h6M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
-      Reset
+
+    <button class="ctrl-btn ctrl-ghost" :disabled="disabled" @click="$emit('reset')">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8">
+        <path d="M3.5 6A7 7 0 1 1 3 10" stroke-linecap="round"/>
+        <path d="M1 4l2.5 2L6 4" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
     </button>
-    <select v-if="!hasVideo" :value="speed" @change="$emit('speed', Number($event.target.value))">
-      <option v-for="s in speeds" :key="s" :value="s">{{ s }}×</option>
-    </select>
-    <span class="track-name">{{ trackName }}</span>
+
+    <div v-if="!hasVideo" class="speed-select-wrap">
+      <select class="speed-select" :value="speed" @change="$emit('speed', Number($event.target.value))">
+        <option v-for="s in speeds" :key="s" :value="s">{{ s }}×</option>
+      </select>
+    </div>
+
+    <span v-if="trackName" class="track-name">{{ trackName }}</span>
   </div>
 </template>
 
 <script setup>
 defineProps({
-  playing:  Boolean,
-  speed:    Number,
+  playing:   Boolean,
+  speed:     Number,
   trackName: String,
-  hasVideo: { type: Boolean, default: false },
-  disabled: { type: Boolean, default: false },
+  hasVideo:  { type: Boolean, default: false },
+  disabled:  { type: Boolean, default: false },
 })
 defineEmits(['toggle', 'reset', 'speed'])
-
 const speeds = [1, 2, 5, 10, 20]
 </script>
 
@@ -33,41 +43,77 @@ const speeds = [1, 2, 5, 10, 20]
 .controls {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
-button {
+.ctrl-btn {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: .5rem .9rem;
-  font-size: 13px;
+  padding: .5rem .85rem;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .03em;
   border-radius: var(--radius-md);
   cursor: pointer;
-  background: var(--bg2);
-  border: 0.5px solid var(--border2);
+  border: 1px solid var(--border2);
+  background: var(--bg3);
   color: var(--text);
-  transition: background .15s;
+  transition: all .15s;
+  white-space: nowrap;
 }
-button:hover { background: var(--bg3); }
-button:active { transform: scale(.97); }
-button:disabled { opacity: .45; cursor: not-allowed; }
-button svg { width: 16px; height: 16px; }
-select {
-  font-size: 13px;
-  padding: .45rem .7rem;
+.ctrl-btn svg { width: 14px; height: 14px; flex-shrink: 0; }
+.ctrl-btn:disabled { opacity: .35; cursor: not-allowed; }
+
+.ctrl-play {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #000;
+  box-shadow: 0 0 16px rgba(255,214,10,.22);
+}
+.ctrl-play:hover:not(:disabled) {
+  background: #ffe033;
+  box-shadow: 0 0 24px rgba(255,214,10,.4);
+}
+.ctrl-play:active:not(:disabled) { transform: scale(.97); }
+
+.ctrl-ghost {
+  background: transparent;
+  padding: .5rem .6rem;
+}
+.ctrl-ghost:hover:not(:disabled) {
+  border-color: var(--accent-semi);
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.speed-select-wrap {
+  border: 1px solid var(--border2);
   border-radius: var(--radius-md);
-  border: 0.5px solid var(--border2);
-  background: var(--bg2);
+  background: var(--bg3);
+  overflow: hidden;
+}
+.speed-select {
+  font-size: 12px;
+  font-weight: 600;
+  padding: .48rem .7rem;
+  border: none;
+  background: transparent;
   color: var(--text);
   cursor: pointer;
+  outline: none;
 }
 .track-name {
   margin-left: auto;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text3);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 200px;
+  max-width: 180px;
+}
+@media (max-width: 600px) {
+  .track-name { display: none; }
+  span { display: none; }
+  .ctrl-play { padding: .5rem .65rem; }
 }
 </style>

@@ -130,5 +130,5 @@ export function useGpxParser() {
     reader.readAsText(file)
   }
 
-  return { gpxPoints, trackName, hasTimestamps, stats, parseError, loadFile }
+  return { gpxPoints, trackName, hasTimestamps, stats, parseError, loadFile, parseGPX }
 }

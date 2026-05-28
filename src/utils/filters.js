@@ -1,14 +1,27 @@
 export const VIDEO_FILTERS = [
-  { id: 'none',      label: 'None',      css: 'none' },
-  { id: 'vivid',     label: 'Vivid',     css: 'saturate(1.6) contrast(1.1) brightness(1.05)' },
-  { id: 'cinematic', label: 'Cinematic', css: 'contrast(1.2) saturate(0.82) brightness(0.92)' },
-  { id: 'warm',      label: 'Warm',      css: 'sepia(0.3) saturate(1.35) brightness(1.05)' },
-  { id: 'cool',      label: 'Cool',      css: 'hue-rotate(18deg) saturate(1.15) brightness(1.02)' },
-  { id: 'bw',        label: 'B&W',       css: 'grayscale(1) contrast(1.15)' },
-  { id: 'vintage',   label: 'Vintage',   css: 'sepia(0.55) contrast(0.88) brightness(1.12) saturate(0.75)' },
-  { id: 'fade',      label: 'Fade',      css: 'contrast(0.82) saturate(0.72) brightness(1.18)' },
+  { id: 'none',      label: 'None'      },
+  { id: 'clarity',   label: 'Clarity'   },
+  { id: 'vivid',     label: 'Vivid'     },
+  { id: 'cinematic', label: 'Cinematic' },
+  { id: 'warm',      label: 'Warm'      },
+  { id: 'cool',      label: 'Cool'      },
+  { id: 'bw',        label: 'B&W'       },
+  { id: 'vintage',   label: 'Vintage'   },
+  { id: 'fade',      label: 'Fade'      },
 ]
 
-export function filterCss(id) {
-  return VIDEO_FILTERS.find(f => f.id === id)?.css ?? 'none'
+// WebGL shader parameters — single source of truth for all filters.
+// sharp: unsharp-mask strength | radius: kernel pixel radius
+// bright/contrast/sat/sepia/hue: colour corrections
+export const SHADER_PARAMS = {
+  none:      { sharp: 0.0, radius: 1.0, bright: 1.00, contrast: 1.00, sat: 1.00, sepia: 0.00, hue: 0.000 },
+  // Large-radius unsharp mask for that "clarity" look only possible in GPU shaders
+  clarity:   { sharp: 2.5, radius: 2.0, bright: 0.97, contrast: 1.25, sat: 1.45, sepia: 0.00, hue: 0.000 },
+  vivid:     { sharp: 0.8, radius: 1.0, bright: 1.05, contrast: 1.12, sat: 1.65, sepia: 0.00, hue: 0.000 },
+  cinematic: { sharp: 0.4, radius: 1.2, bright: 0.90, contrast: 1.28, sat: 0.78, sepia: 0.00, hue: 0.000 },
+  warm:      { sharp: 0.0, radius: 1.0, bright: 1.08, contrast: 1.02, sat: 1.40, sepia: 0.32, hue: 0.000 },
+  cool:      { sharp: 0.2, radius: 1.0, bright: 1.03, contrast: 1.05, sat: 1.20, sepia: 0.00, hue: 0.055 },
+  bw:        { sharp: 0.8, radius: 1.0, bright: 1.00, contrast: 1.22, sat: 0.00, sepia: 0.00, hue: 0.000 },
+  vintage:   { sharp: 0.0, radius: 1.0, bright: 1.10, contrast: 0.85, sat: 0.70, sepia: 0.60, hue: 0.000 },
+  fade:      { sharp: 0.0, radius: 1.0, bright: 1.20, contrast: 0.80, sat: 0.68, sepia: 0.00, hue: 0.000 },
 }
