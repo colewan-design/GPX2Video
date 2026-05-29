@@ -4,9 +4,9 @@ const DB_NAME    = 'gpx2video'
 const STORE_NAME = 'geocache'
 const DB_VERSION = 1
 
-// Round to 2 decimal places (~1.1 km grid) to maximise cache hits
+// Round to 3 decimal places (~111 m grid) for more specific cache hits
 function cacheKey(lat, lon) {
-  return `${(+lat).toFixed(2)},${(+lon).toFixed(2)}`
+  return `${(+lat).toFixed(3)},${(+lon).toFixed(3)}`
 }
 
 let _db = null
@@ -44,17 +44,20 @@ function dbPut(key, value) {
 function buildName(data) {
   const a = data.address || {}
 
-  // Most specific place name: barangay → neighbourhood → hamlet → village → suburb → city_district
+  // Most specific: named trail, road, or path
+  const road = a.road || a.path || a.cycleway || a.footway || a.track || a.pedestrian || ''
+
+  // Place: barangay → neighbourhood → hamlet → isolated_dwelling
   const place = a.barangay || a.neighbourhood || a.hamlet || a.isolated_dwelling || ''
 
   // Settlement: city → town → municipality → village → suburb → county
   const city = a.city || a.town || a.municipality || a.village || a.suburb || a.city_district || a.county || a.state_district || ''
 
-  // Administrative region: PH uses province + region; others use state
+  // Administrative region
   const region = a.state || a.province || a.region || ''
 
-  // Build from most → least specific, skip duplicates
-  const parts = [place, city, region].filter((v, i, arr) => v && arr.indexOf(v) === i)
+  // Prefer road over place when available; build from most → least specific, skip duplicates
+  const parts = [road || place, city, region].filter((v, i, arr) => v && arr.indexOf(v) === i)
 
   return parts.length
     ? parts.join(', ')
@@ -83,7 +86,7 @@ export function useReverseGeocode() {
 
     // 2. Fetch from Nominatim
     try {
-      const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&zoom=14`
+      const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&zoom=16`
       const res = await fetch(url, {
         headers: { 'Accept-Language': 'en', 'User-Agent': 'gpx2video/1.0' }
       })

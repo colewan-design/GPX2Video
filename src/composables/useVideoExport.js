@@ -3,6 +3,7 @@ import { Muxer, ArrayBufferTarget } from 'mp4-muxer'
 import { arrayMax, lerp, fmtTime } from '../utils/geo.js'
 import { useVideoShader } from './useVideoShader.js'
 import { SHADER_PARAMS } from '../utils/filters.js'
+import { SPEED_PRESETS, buildFrameSourceTimes, isFlatNormal } from '../utils/speedCurve.js'
 
 export function useVideoExport() {
   const exporting     = ref(false)
@@ -10,13 +11,15 @@ export function useVideoExport() {
   const exportError   = ref(null)
 
   async function startExport(
-    videoEl, gpxPoints, totalOffsetSec, totalTime,
+    videoEl, segments, gpxPoints, totalOffsetSec, totalTime,
     trimStart = 0, trimEnd = null,
     videoTrimStartSec = null, videoTrimEndSec = null,
     overlayFormat = 'classic',
     overlayColor = '#f59e0b',
     locationName = '',
     shaderParams = null,
+    speedCurvePreset = 'normal',
+    clipsArray = null,
   ) {
     if (!videoEl || !gpxPoints.length) return
 
@@ -33,9 +36,9 @@ export function useVideoExport() {
 
     try {
       await runExport(
-        videoEl, gpxPoints, totalOffsetSec, totalTime, trimStart, tEnd,
+        videoEl, segments ?? [], gpxPoints, totalOffsetSec, totalTime, trimStart, tEnd,
         videoTrimStartSec, videoTrimEndSec, overlayFormat, overlayColor, locationName,
-        shaderParams,
+        shaderParams, speedCurvePreset, clipsArray,
       )
     } catch (e) {
       exportError.value = e.message ?? 'Export failed.'
@@ -49,46 +52,94 @@ export function useVideoExport() {
   }
 
   async function runExport(
-    videoEl, gpxPoints, totalOffsetSec, totalTime, trimStart, trimEnd,
+    videoEl, segments, gpxPoints, totalOffsetSec, totalTime, trimStart, trimEnd,
     videoTrimStartSec, videoTrimEndSec, overlayFormat = 'classic', overlayColor = '#f59e0b', locationName = '',
-    shaderParams = null,
+    shaderParams = null, speedCurvePreset = 'normal', clipsArray = null,
   ) {
     const srcW = videoEl.videoWidth
     const srcH = videoEl.videoHeight
 
-    // Cap at 1920px wide to keep encoding responsive
     const scale = Math.min(1, 1920 / srcW)
-    // Dimensions must be even numbers for H.264
     const W = Math.round(srcW * scale / 2) * 2
     const H = Math.round(srcH * scale / 2) * 2
 
-    const fps      = 30
-    const duration = videoEl.duration
+    const fps           = 30
+    const frameInterval = 1 / fps
 
     const canvas = new OffscreenCanvas(W, H)
     const ctx    = canvas.getContext('2d')
 
-    // ── WebGL shader canvas (video frame processing) ──────────────────────────
-    // Renders the video through the GLSL shader (unsharp mask + colour ops),
-    // then we blit the result onto the 2D canvas before drawing the HUD.
     const glCanvas = new OffscreenCanvas(W, H)
     const shader   = useVideoShader()
-    const glOk     = shader.setup(glCanvas, videoEl)
-    if (glOk) shader.setFilter(shaderParams ?? SHADER_PARAMS.none)
 
-    // ── Audio setup (before muxer so we know whether to include audio track) ──
-    // Use captureStream() instead of createMediaElementSource so the video
-    // element's audio pipeline is never hijacked and keeps working after export.
+    const maxSpeed = arrayMax(gpxPoints.map(p => p.speedSmooth)) || 1
+
+    // ── Build clip list with segment-local time ranges ────────────────────────
+    // Each entry: { absStart, clipDur, segmentIdx, localStart, localEnd, src }
+    // localStart/localEnd are positions within the segment's video file.
+    let activeClips
+    if (clipsArray && clipsArray.length) {
+      activeClips = clipsArray
+        .filter(c => c.end > c.start)
+        .map(c => {
+          const segIdx     = c.segmentIdx ?? 0
+          const segStart   = c.segStart   ?? 0
+          const clipDur    = c.end - c.start
+          const localStart = segStart
+          const localEnd   = segStart + clipDur
+          const src        = segments[segIdx]?.src ?? null
+          return { absStart: c.start, clipDur, segmentIdx: segIdx, localStart, localEnd, src }
+        })
+        .filter(c => c.clipDur > 0.001 && c.src)
+    } else {
+      const seg0 = segments[0]
+      const dur0 = videoEl.duration || seg0?.duration || 0
+      const [s, e] = (videoTrimStartSec !== null && videoTrimEndSec !== null)
+        ? [Math.max(0, videoTrimStartSec), Math.min(dur0, videoTrimEndSec)]
+        : gpxTrimToVideoRange(gpxPoints, totalOffsetSec, dur0, trimStart, trimEnd)
+      activeClips = [{
+        absStart: s, clipDur: e - s,
+        segmentIdx: 0, localStart: s, localEnd: e,
+        src: seg0?.src ?? null,
+      }]
+    }
+
+    const totalActiveDur = activeClips.reduce((sum, c) => sum + c.clipDur, 0)
+
+    // ── Per-segment video elements (lazy-loaded) ──────────────────────────────
+    // Reuse the live videoEl for segment 0; create hidden elements for others.
+    const segEls = new Map()
+    segEls.set(0, videoEl)
+
+    async function getSegEl(segIdx, src) {
+      if (segEls.has(segIdx)) return segEls.get(segIdx)
+      const v = Object.assign(document.createElement('video'), {
+        src, muted: true, preload: 'auto',
+      })
+      v.setAttribute('playsinline', '')
+      await new Promise((res, rej) => {
+        v.addEventListener('loadedmetadata', res, { once: true })
+        v.addEventListener('error', rej, { once: true })
+      })
+      segEls.set(segIdx, v)
+      return v
+    }
+
+    // ── Audio: only for single-segment flat-speed exports ─────────────────────
+    const allSameSeg = activeClips.every(c => c.segmentIdx === 0)
+    const curvePreset    = SPEED_PRESETS[speedCurvePreset] ?? SPEED_PRESETS.normal
+    const curveKeyframes = curvePreset.keyframes
+    const useCurve       = !isFlatNormal(curveKeyframes)
+
     let AUDIO_SAMPLE_RATE = 48000
     let AUDIO_CHANNELS    = 2
     let audioEncoder      = null
     let audioReader       = null
 
-    if (
-      'AudioEncoder' in window &&
-      'MediaStreamTrackProcessor' in window &&
-      typeof videoEl.captureStream === 'function'
-    ) {
+    if (allSameSeg && !useCurve &&
+        'AudioEncoder' in window &&
+        'MediaStreamTrackProcessor' in window &&
+        typeof videoEl.captureStream === 'function') {
       try {
         const stream     = videoEl.captureStream()
         const audioTrack = stream.getAudioTracks()[0]
@@ -98,11 +149,10 @@ export function useVideoExport() {
           AUDIO_CHANNELS    = settings.channelCount ?? 2
           audioReader       = new MediaStreamTrackProcessor({ track: audioTrack }).readable.getReader()
         }
-      } catch {
-        audioReader = null
-      }
+      } catch { audioReader = null }
     }
 
+    // ── Muxer + encoders ──────────────────────────────────────────────────────
     const target = new ArrayBufferTarget()
     const muxer  = new Muxer({
       target,
@@ -117,56 +167,47 @@ export function useVideoExport() {
       output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
       error:  (e) => { encoderError = e },
     })
-
-    encoder.configure({
-      codec:     avcCodec(W, H),
-      width:     W,
-      height:    H,
-      bitrate:   8_000_000,
-      framerate: fps,
-    })
+    encoder.configure({ codec: avcCodec(W, H), width: W, height: H, bitrate: 8_000_000, framerate: fps })
 
     if (audioReader) {
       audioEncoder = new AudioEncoder({
         output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
         error:  (e) => { encoderError = e },
       })
-      audioEncoder.configure({
-        codec:            'mp4a.40.2',
-        sampleRate:       AUDIO_SAMPLE_RATE,
-        numberOfChannels: AUDIO_CHANNELS,
-        bitrate:          128_000,
+      audioEncoder.configure({ codec: 'mp4a.40.2', sampleRate: AUDIO_SAMPLE_RATE, numberOfChannels: AUDIO_CHANNELS, bitrate: 128_000 })
+    }
+
+    // ── Seek helper (per video element) ───────────────────────────────────────
+    async function seekElTo(el, t) {
+      if (Math.abs(el.currentTime - t) < 0.001) return
+      await new Promise(r => {
+        el.addEventListener('seeked', r, { once: true })
+        el.currentTime = t
       })
     }
 
-    const maxSpeed      = arrayMax(gpxPoints.map(p => p.speedSmooth)) || 1
-    const frameInterval = 1 / fps
+    // ── Render one frame ──────────────────────────────────────────────────────
+    // absTime = absolute position on the full timeline (for GPX overlay mapping)
+    let activeGlOk = false
+    let activeVidEl = null
 
-    // Use explicit video trim seconds if provided, otherwise derive from GPX trim indices
-    const [vTrimStart, vTrimEnd] = (videoTrimStartSec !== null && videoTrimEndSec !== null)
-      ? [Math.max(0, videoTrimStartSec), Math.min(duration, videoTrimEndSec)]
-      : gpxTrimToVideoRange(gpxPoints, totalOffsetSec, duration, trimStart, trimEnd)
-    const trimDuration = vTrimEnd - vTrimStart
-
-    let lastEncodedTime = vTrimStart - frameInterval
-    let frameCount      = 0
-    const savedTime     = videoEl.currentTime
-
-    // Seek to trim start and wait for the seek to fully complete before
-    // registering requestVideoFrameCallback.  Without this, the first RVFC
-    // can fire while the video is still seeking, ctx.drawImage gets a null
-    // frame, and new VideoFrame throws "Cannot read properties of null
-    // (reading 'colorSpace')".
-    await new Promise(seekDone => {
-      if (Math.abs(videoEl.currentTime - vTrimStart) < 0.01) {
-        seekDone()
+    function renderCanvas(absTime, overallProgress) {
+      const idx   = findAnimIdx(gpxPoints, totalOffsetSec, absTime, totalActiveDur, trimStart, trimEnd)
+      const point = gpxPoints[idx]
+      if (activeGlOk) {
+        shader.renderFrame()
+        ctx.drawImage(glCanvas, 0, 0, W, H)
       } else {
-        videoEl.addEventListener('seeked', seekDone, { once: true })
-        videoEl.currentTime = vTrimStart
+        ctx.drawImage(activeVidEl, 0, 0, W, H)
       }
-    })
+      drawMapInset(ctx, W, H, gpxPoints, idx, maxSpeed, trimStart)
+      drawHud(ctx, W, H, point, gpxPoints, idx, overallProgress, totalTime, overlayFormat, overlayColor, locationName)
+    }
 
-    // ── Audio capture loop (runs concurrently with video frame loop) ──────────
+    // Seek to the first clip start for audio sync
+    await seekElTo(videoEl, activeClips[0].localStart)
+
+    // ── Audio capture loop (single-segment flat-speed only) ───────────────────
     let audioDone = false
     const audioLoopDone = audioReader
       ? (async () => {
@@ -187,62 +228,103 @@ export function useVideoExport() {
         })()
       : Promise.resolve()
 
-    await new Promise((resolve, reject) => {
-      function frameCallback(_, metadata) {
-        if (!exporting.value || encoderError) { resolve(); return }
+    let frameCount       = 0
+    let outputTimeOffset = 0
 
-        const vt = metadata.mediaTime
+    // ── Encode each clip ──────────────────────────────────────────────────────
+    for (const clip of activeClips) {
+      if (!exporting.value || encoderError) break
 
-        // Skip frames before trim start (can happen on first callback after seek)
-        if (vt < vTrimStart - frameInterval * 0.5) {
-          videoEl.requestVideoFrameCallback(frameCallback)
-          return
-        }
+      const el = await getSegEl(clip.segmentIdx, clip.src)
 
-        if (vt - lastEncodedTime >= frameInterval - 0.001) {
-          const idx   = findAnimIdx(gpxPoints, totalOffsetSec, vt, duration, trimStart, trimEnd)
-          const point = gpxPoints[idx]
-
-          // Progress relative to trim duration
-          const trimProgress = trimDuration > 0
-            ? Math.max(0, Math.min((vt - vTrimStart) / trimDuration, 1))
-            : 0
-
-          // Render video frame through WebGL shader, then blit to 2D canvas
-          if (glOk) {
-            shader.renderFrame()
-            ctx.drawImage(glCanvas, 0, 0, W, H)
-          } else {
-            ctx.drawImage(videoEl, 0, 0, W, H)
-          }
-          drawMapInset(ctx, W, H, gpxPoints, idx, maxSpeed, trimStart)
-          drawHud(ctx, W, H, point, gpxPoints, idx, trimProgress, totalTime, overlayFormat, overlayColor, locationName)
-
-          // Timestamps relative to trim start so output MP4 begins at t=0
-          const ts       = Math.round((vt - vTrimStart) * 1_000_000)
-          const keyFrame = frameCount % (fps * 2) === 0
-          const frame    = new VideoFrame(canvas, { timestamp: ts })
-          encoder.encode(frame, { keyFrame })
-          frame.close()
-
-          frameCount++
-          lastEncodedTime      = vt
-          exportProgress.value = trimProgress
-        }
-
-        if (vt < vTrimEnd - frameInterval) {
-          videoEl.requestVideoFrameCallback(frameCallback)
-        } else {
-          resolve()
-        }
+      // Re-init WebGL shader when switching video elements
+      if (el !== activeVidEl) {
+        if (activeVidEl) shader.destroy()
+        activeGlOk  = shader.setup(glCanvas, el)
+        if (activeGlOk) shader.setFilter(shaderParams ?? SHADER_PARAMS.none)
+        activeVidEl = el
       }
 
-      videoEl.requestVideoFrameCallback(frameCallback)
-      videoEl.play().catch(reject)
-    })
+      if (useCurve) {
+        // ── Curved speed: seek-based ────────────────────────────────────────
+        const sourceTimes = buildFrameSourceTimes(curveKeyframes, clip.clipDur, fps)
+        let lastSeekTarget = -1
 
+        for (let i = 0; i < sourceTimes.length; i++) {
+          if (!exporting.value || encoderError) break
+          const localT = clip.localStart + Math.min(sourceTimes[i], clip.clipDur - 0.001)
+
+          if (Math.abs(localT - lastSeekTarget) >= frameInterval * 0.25) {
+            await seekElTo(el, localT)
+            lastSeekTarget = localT
+          }
+
+          const absTime     = clip.absStart + (localT - clip.localStart)
+          const overallProg = totalActiveDur > 0 ? (outputTimeOffset + i / fps) / totalActiveDur : 0
+          renderCanvas(absTime, overallProg)
+
+          const ts = Math.round((outputTimeOffset + i / fps) * 1_000_000)
+          const frame = new VideoFrame(canvas, { timestamp: ts })
+          encoder.encode(frame, { keyFrame: frameCount % (fps * 2) === 0 })
+          frame.close()
+          frameCount++
+          exportProgress.value = overallProg
+        }
+
+        outputTimeOffset += sourceTimes.length / fps
+      } else {
+        // ── Normal 1×: RVFC play-based ──────────────────────────────────────
+        await seekElTo(el, clip.localStart)
+        let lastEncodedTime = clip.localStart - frameInterval
+
+        await new Promise((resolve, reject) => {
+          function frameCallback(_, metadata) {
+            if (!exporting.value || encoderError) { resolve(); return }
+            const vt = metadata.mediaTime
+
+            if (vt < clip.localStart - frameInterval * 0.5) {
+              el.requestVideoFrameCallback(frameCallback); return
+            }
+
+            if (vt - lastEncodedTime >= frameInterval - 0.001) {
+              const elapsed     = Math.max(0, vt - clip.localStart)
+              const overallProg = totalActiveDur > 0 ? (outputTimeOffset + elapsed) / totalActiveDur : 0
+              const absTime     = clip.absStart + elapsed
+              renderCanvas(absTime, overallProg)
+
+              const ts = Math.round((outputTimeOffset + elapsed) * 1_000_000)
+              const frame = new VideoFrame(canvas, { timestamp: ts })
+              encoder.encode(frame, { keyFrame: frameCount % (fps * 2) === 0 })
+              frame.close()
+              frameCount++
+              lastEncodedTime      = vt
+              exportProgress.value = overallProg
+            }
+
+            if (vt < clip.localEnd - frameInterval) {
+              el.requestVideoFrameCallback(frameCallback)
+            } else {
+              resolve()
+            }
+          }
+
+          el.requestVideoFrameCallback(frameCallback)
+          el.play().catch(reject)
+        })
+
+        el.pause()
+        outputTimeOffset += clip.clipDur
+      }
+    }
+
+    // Restore live video element
     videoEl.pause()
-    videoEl.currentTime = savedTime
+    videoEl.currentTime = activeClips[0]?.localStart ?? 0
+
+    // Clean up off-screen video elements created for other segments
+    for (const [segIdx, el] of segEls.entries()) {
+      if (segIdx !== 0) { el.src = ''; el.load() }
+    }
 
     audioDone = true
     audioReader?.cancel().catch(() => {})
@@ -471,11 +553,12 @@ function drawHud(ctx, W, H, point, pts, animIdx, progress, totalTime, overlayFor
   ctx.fillRect(0, 0, fillW, barH)
 
   // ── Bottom gradient ──────────────────────────────────────────────────────────
-  const grad = ctx.createLinearGradient(0, H * 0.72, 0, H)
+  // CSS .hud-bottom-row: bottom:0; height:30%; gradient transparent→opaque at 55%
+  const grad = ctx.createLinearGradient(0, H * 0.70, 0, H * 0.865)
   grad.addColorStop(0, 'transparent')
   grad.addColorStop(1, 'rgba(0,0,0,0.78)')
   ctx.fillStyle = grad
-  ctx.fillRect(0, H * 0.72, W, H * 0.28)
+  ctx.fillRect(0, H * 0.70, W, H * 0.30)
 
   // ── Helpers ──────────────────────────────────────────────────────────────────
   const AMBER  = overlayColor
@@ -496,16 +579,51 @@ function drawHud(ctx, W, H, point, pts, animIdx, progress, totalTime, overlayFor
     ctx.shadowColor = 'transparent'
   }
 
-  // ── Left stats panel ─────────────────────────────────────────────────────────
-  const lx   = Math.round(28 * s)
-  const topY = Math.round(H * 0.30)
-  const rowH = Math.round(H * 0.08)
+  // ── SVG icon paths (24×24 viewBox) — copied from Vue template ───────────────
+  const ICON_CADENCE = 'M12 4a8 8 0 1 0 0 16A8 8 0 0 0 12 4zm0 2a6 6 0 1 1 0 12A6 6 0 0 1 12 6zm0 2a4 4 0 1 0 0 8 4 4 0 0 0 0-8z'
+  const ICON_ELEV    = 'M12 2 9 8h6L12 2zm0 20 3-6H9l3 6zM2 12l6-3v6L2 12zm20 0-6 3V9l6 3z'
+  const ICON_POWER   = 'M20.57 14.86 22 13.43 20.57 12 17 15.57 8.43 7 12 3.43 10.57 2 9.14 3.43 7.71 2 5.57 4.14 4.14 2.71 2.71 4.14l1.43 1.43L2 7.71l1.43 1.43L2 10.57 3.43 12 7 8.43 15.57 17 12 20.57 13.43 22l1.43-1.43L16.29 22l2.14-2.14 1.43 1.43 1.43-1.43-1.43-1.43L22 16.29l-1.43-1.43z'
+  const ICON_PACE    = 'M13.49 5.48c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm-3.6 13.9 1-4.4 2.1 2v6h2v-7.5l-2.1-2 .6-3c1.3 1.5 3.3 2.5 5.5 2.5v-2c-1.9 0-3.5-1-4.3-2.4l-1-1.6c-.4-.6-1-1-1.7-1-.3 0-.5.1-.8.1l-5.2 2.2v4.7h2v-3.4l1.8-.7-1.6 8.1-4.9-1-.4 2 7 1.4z'
+  const ICON_ZAP     = 'M7 2v11h3v9l7-12h-4l4-8z'
+  const ICON_FLAG    = 'M14 6l-1-2H5v17h2v-7h5l1 2h7V6h-6zm4 8h-4l-1-2H7V6h5l1 2h5v6z'
+  const ICON_GEAR    = 'M12 15.5A3.5 3.5 0 0 1 8.5 12 3.5 3.5 0 0 1 12 8.5a3.5 3.5 0 0 1 3.5 3.5 3.5 3.5 0 0 1-3.5 3.5m7.43-2.92c.04-.33.07-.67.07-1.08s-.03-.75-.07-1.08l2.32-1.8c.21-.16.27-.46.13-.7l-2.2-3.81c-.14-.24-.42-.32-.66-.24l-2.74 1.1c-.57-.44-1.18-.81-1.86-1.08L14.8 2.28C14.74 2.02 14.5 1.83 14.22 1.83h-4.43c-.28 0-.52.19-.57.46L8.88 4.9c-.68.27-1.29.64-1.86 1.08L4.28 4.88c-.25-.09-.52 0-.66.24L1.42 8.93c-.14.24-.09.54.13.7l2.32 1.8C3.83 11.76 3.8 12.1 3.8 12.5s.03.74.07 1.08l-2.32 1.8c-.21.16-.27.46-.13.7l2.2 3.81c.14.24.42.32.66.24l2.74-1.1c.57.44 1.18.81 1.86 1.08l.36 2.63c.05.26.29.45.57.45h4.43c.28 0 .52-.19.57-.46l.36-2.62c.68-.27 1.29-.64 1.86-1.08l2.74 1.1c.25.09.52 0 .66-.24l2.2-3.81c.14-.24.09-.54-.13-.7l-2.32-1.8z'
+  const ICON_HEART   = 'm12 21.35-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z'
+  const ICON_THERMO  = 'M15 13V5a3 3 0 0 0-6 0v8a5 5 0 1 0 6 0z'
 
+  // Draw a 24×24-viewBox SVG path centered at (cx, cy) with display size sz
+  function icon(path, cx, cy, sz, color) {
+    const sc = sz / 24
+    ctx.save()
+    ctx.translate(cx - sz / 2, cy - sz / 2)
+    ctx.scale(sc, sc)
+    ctx.fillStyle = color
+    ctx.shadowColor = 'rgba(0,0,0,0.6)'
+    ctx.shadowBlur  = Math.round(3 * s)
+    ctx.fill(new Path2D(path))
+    ctx.restore()
+  }
+
+  // ── Layout constants (match CSS percentages exactly) ──────────────────────────
+  const iconSz  = Math.round(22 * s)           // CSS: clamp(14px, 2cqw, 22px) baseline
+  const iconGap = Math.round(4 * s)            // CSS: clamp(3px, 0.5cqw, 7px)
+  const lEdge   = Math.round(W * 0.015)        // CSS: left: 1.5%
+  const rEdge   = W - Math.round(W * 0.015)    // CSS: right: 1.5%
+  const licx    = lEdge + iconSz / 2           // left panel icon center x
+  const ltx     = lEdge + iconSz + iconGap     // left panel text start x
+  const ricx    = rEdge - iconSz / 2           // right panel icon center x
+  const rtx     = rEdge - iconSz - iconGap     // right panel text end x (right-align)
+
+  // Stat panel: CSS top:30% → bottom:30% (height=40%), space-around 4 rows
+  const panelTop = Math.round(H * 0.30)
+  const panelH   = Math.round(H * 0.40)
+  const rc       = (i) => panelTop + Math.round(panelH * (2 * i + 1) / 8)
+  const r0=rc(0), r1=rc(1), r2=rc(2), r3=rc(3)
+
+  // ── Metric values ─────────────────────────────────────────────────────────────
   const spd   = (point?.speedSmooth ?? 0).toFixed(0)
   const cadV  = point?.cadSmooth  != null ? String(Math.round(point.cadSmooth))  : '--'
   const hrV   = point?.hrSmooth   != null ? String(Math.round(point.hrSmooth))   : '--'
   const pwV   = point?.powerSmooth!= null ? `${Math.round(point.powerSmooth)}W`  : '--'
-
   const gainM = Math.round(point?.cumElevGain ?? 0)
   const lossM = Math.round(point?.cumElevLoss ?? 0)
 
@@ -516,24 +634,6 @@ function drawHud(ctx, W, H, point, pts, animIdx, progress, totalTime, overlayFor
     paceStr = `${m}:${String(sec).padStart(2,'0')}`
   }
 
-  // cadence row
-  text(cadV, lx + Math.round(26*s), topY, 15, 700, WHITE)
-  text('rpm', lx + ctx.measureText(cadV).width + Math.round(30*s), topY, 9, 600, DIM)
-
-  // gain/loss row
-  text(`Gain: ${gainM} m`, lx + Math.round(26*s), topY + rowH,     13, 600, WHITE)
-  text(`Loss: ${lossM} m`, lx + Math.round(26*s), topY + rowH + Math.round(16*s), 12, 600, DIM)
-
-  // power row
-  text(pwV, lx + Math.round(26*s), topY + rowH * 2 + Math.round(12*s), 15, 700, WHITE)
-
-  // pace row
-  text(`${paceStr}/km`, lx + Math.round(26*s), topY + rowH * 3 + Math.round(12*s), 15, 700, WHITE)
-
-  // ── Right stats panel ─────────────────────────────────────────────────────────
-  const rx = W - Math.round(28 * s)
-
-  // kcal estimate
   const p0 = pts[0]
   let kcalStr = '--'
   if (point?.time && p0?.time) {
@@ -547,10 +647,55 @@ function drawHud(ctx, W, H, point, pts, animIdx, progress, totalTime, overlayFor
   const grade = point?.grade ?? 0
   const gradeStr = `${grade >= 0 ? '+' : ''}${grade.toFixed(1)}%`
 
-  text(`${kcalStr} kcal`, rx, topY,                                   15, 700, WHITE, 'right')
-  text(gradeStr,          rx, topY + rowH,                             15, 700, WHITE, 'right')
-  text('-- - --',         rx, topY + rowH * 2 + Math.round(12*s),     15, 700, WHITE, 'right')
-  text(`${hrV} bpm`,      rx, topY + rowH * 3 + Math.round(12*s),     15, 700, WHITE, 'right')
+  // ── Top info bar: temperature + distance ──────────────────────────────────────
+  // CSS .hud-top-info: position:absolute; top:5px; left:29%; right:23%
+  // Distance block is margin-left:auto (right-aligned within the area)
+  const tiTop   = Math.round(5 * s)
+  const tiRight = Math.round(W * 0.77) - Math.round(4 * s)
+  const tempC   = point?.atemp != null ? Math.round(point.atemp) : null
+
+  if (tempC !== null) {
+    const tiLeft  = Math.round(W * 0.29) + Math.round(4 * s)
+    const tIconSz = Math.round(20 * s)
+    icon(ICON_THERMO, tiLeft + tIconSz / 2, tiTop + tIconSz / 2, tIconSz, WHITE)
+    text(`${tempC}°C`, tiLeft + tIconSz + Math.round(3*s), tiTop + tIconSz / 2, 14, 600, WHITE, 'left', 'middle')
+  }
+
+  const distKmStr      = ((point?.cumDist ?? 0) / 1000).toFixed(1)
+  const totalDistKmStr = pts.length ? ((pts[pts.length - 1].cumDist / 1000).toFixed(1)) : '0.0'
+  text(`${distKmStr} km`,          tiRight, tiTop + Math.round(2*s),  16, 700, WHITE,                       'right', 'top')
+  text(`Total: ${totalDistKmStr}`, tiRight, tiTop + Math.round(22*s), 9,  400, 'rgba(255,255,255,0.40)',    'right', 'top')
+
+  // ── Left stats panel (icon + value, vertically space-around) ─────────────────
+  icon(ICON_CADENCE, licx, r0, iconSz, AMBER)
+  text(cadV, ltx, r0, 15, 700, WHITE, 'left', 'middle')
+  // measure cadV width while font is still set from text() above
+  const cadVW = ctx.measureText(cadV).width
+  text('rpm', ltx + cadVW + Math.round(3*s), r0, 9, 600, DIM, 'left', 'middle')
+
+  icon(ICON_ELEV, licx, r1, iconSz, AMBER)
+  const glOff = Math.round(8 * s)
+  text(`Gain: ${gainM} m`, ltx, r1 - glOff, 13, 600, WHITE, 'left', 'middle')
+  text(`Loss: ${lossM} m`, ltx, r1 + glOff, 12, 600, DIM,   'left', 'middle')
+
+  icon(ICON_POWER, licx, r2, iconSz, AMBER)
+  text(pwV, ltx, r2, 15, 700, WHITE, 'left', 'middle')
+
+  icon(ICON_PACE, licx, r3, iconSz, AMBER)
+  text(`${paceStr}/km`, ltx, r3, 15, 700, WHITE, 'left', 'middle')
+
+  // ── Right stats panel (value + icon, right-aligned) ───────────────────────────
+  icon(ICON_ZAP,   ricx, r0, iconSz, AMBER)
+  text(`${kcalStr} kcal`, rtx, r0, 15, 700, WHITE, 'right', 'middle')
+
+  icon(ICON_FLAG,  ricx, r1, iconSz, AMBER)
+  text(gradeStr,   rtx, r1, 15, 700, WHITE, 'right', 'middle')
+
+  icon(ICON_GEAR,  ricx, r2, iconSz, AMBER)
+  text('-- - --',  rtx, r2, 15, 700, WHITE, 'right', 'middle')
+
+  icon(ICON_HEART, ricx, r3, iconSz, AMBER)
+  text(`${hrV} bpm`, rtx, r3, 15, 700, WHITE, 'right', 'middle')
 
   // ── Elevation chart ───────────────────────────────────────────────────────────
   // Match preview CSS: left:29%, right:23% (width=48%), top:12%, bottom:75% (height=13%)
@@ -598,50 +743,69 @@ function drawHud(ctx, W, H, point, pts, animIdx, progress, totalTime, overlayFor
     }
   }
 
-  // ── Arc gauge helper ──────────────────────────────────────────────────────────
-  function drawGauge(cx, cy, r, value, maxVal, minLabel, maxLabel, valLabel) {
-    const CIRC = 2 * Math.PI * r, ARC = CIRC * 0.75
-    const p = Math.max(0, Math.min(1, (parseFloat(valLabel) || 0) / maxVal))
-    const startAngle = (225 - 90) * Math.PI / 180  // 225° from top = 135° from 3 o'clock
+  // ── Gauge geometry: mirrors CSS .hud-gauge { width: 14% } with viewBox 0 0 100 80
+  // Circle cx=50 cy=47 r=36. Rendered scale = (W*0.14)/100.
+  // Bottom row: position:absolute; bottom:0; height:30%; padding: 0 1% 1.5%.
+  // CSS padding-% is relative to containing block WIDTH, so pad-bottom = 1.5% * W.
+  const gaugeW    = Math.round(W * 0.14)           // rendered SVG width
+  const gaugeH    = Math.round(gaugeW * 0.80)      // viewBox 100×80 → height = 0.8 * width
+  const gaugeR    = Math.round(gaugeW * 0.36)      // r=36 in 100-unit viewBox
+  const gaugeSW   = Math.max(2, Math.round(gaugeW * 0.05))  // stroke-width=5 in 100-unit viewBox
+  const padBottom = Math.round(W * 0.015)          // 1.5% of W bottom padding
+  const gaugeBotY = H - padBottom                  // SVG bottom edge (align-items:flex-end)
+  const gaugeY    = gaugeBotY - Math.round(gaugeH * (33 / 80))  // cy=47, so 33/80 below center
+  const gaugeX    = Math.round(W * 0.08)           // center: 1% pad + 14%/2 = 8% from left
 
-    // Background arc
+  // ── Arc gauge helper ──────────────────────────────────────────────────────────
+  function drawGauge(cx, cy, r, sw, maxVal, minLabel, maxLabel, valLabel) {
+    const ARC_RAD   = Math.PI * 1.5                              // 270° in radians
+    const p         = Math.max(0, Math.min(1, (parseFloat(valLabel) || 0) / maxVal))
+    const startAngle = (225 - 90) * Math.PI / 180               // 135° from 3-o'clock = lower-left
+
+    // Background arc (270°, very dim)
     ctx.beginPath()
-    ctx.arc(cx, cy, r, startAngle, startAngle + ARC * 0.9999 * (Math.PI*2/CIRC) * CIRC / r)
-    ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = Math.round(5*s)
+    ctx.arc(cx, cy, r, startAngle, startAngle + ARC_RAD * 0.9999)
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = sw
     ctx.lineCap = 'round'; ctx.stroke()
 
     // Value arc
     if (p > 0.01) {
       ctx.beginPath()
-      ctx.arc(cx, cy, r, startAngle, startAngle + ARC * p * (Math.PI*2) / CIRC)
-      ctx.strokeStyle = AMBER; ctx.lineWidth = Math.round(5*s)
+      ctx.arc(cx, cy, r, startAngle, startAngle + ARC_RAD * p)
+      ctx.strokeStyle = AMBER; ctx.lineWidth = sw
       ctx.lineCap = 'round'; ctx.stroke()
     }
 
-    // Center value
-    text(valLabel, cx, cy + Math.round(4*s), 18, 700, WHITE, 'center', 'middle')
+    // Center value — font size mirrors SVG font-size="18" in 100-unit viewBox
+    const valFontSz = Math.round(gaugeW * 18 / 100)
+    ctx.font = `700 ${valFontSz}px ${FONT}`
+    ctx.fillStyle = WHITE; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+    ctx.shadowColor = 'rgba(0,0,0,0.85)'; ctx.shadowBlur = Math.round(4*s)
+    ctx.fillText(valLabel, cx, cy + Math.round(gaugeW * 4 / 100))
+    ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'
 
-    // Min/max labels
-    const labelOffset = r + Math.round(10*s)
-    const minX = cx + labelOffset * Math.cos((225-90)*Math.PI/180)
-    const minY = cy + labelOffset * Math.sin((225-90)*Math.PI/180)
-    const maxAngleDeg = 225 + 270
-    const maxX = cx + labelOffset * Math.cos((maxAngleDeg-90)*Math.PI/180)
-    const maxY = cy + labelOffset * Math.sin((maxAngleDeg-90)*Math.PI/180)
-    text(minLabel, minX, minY, 8, 600, DIM, 'center', 'middle')
-    text(maxLabel, maxX, maxY, 8, 600, DIM, 'center', 'middle')
+    // Min/max labels — font-size="7" in SVG viewbox, position from SVG text elements
+    const lblFontSz = Math.round(gaugeW * 7 / 100)
+    const lblR = r + Math.round(gaugeW * 10 / 100)
+    const minX = cx + lblR * Math.cos(startAngle)
+    const minY = cy + lblR * Math.sin(startAngle)
+    const maxX = cx + lblR * Math.cos(startAngle + ARC_RAD)
+    const maxY = cy + lblR * Math.sin(startAngle + ARC_RAD)
+    ctx.font = `600 ${lblFontSz}px ${FONT}`
+    ctx.fillStyle = DIM; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+    ctx.shadowColor = 'rgba(0,0,0,0.85)'; ctx.shadowBlur = Math.round(3*s)
+    ctx.fillText(minLabel, minX, minY)
+    ctx.fillText(maxLabel, maxX, maxY)
+    ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'
   }
 
-  const gaugeR  = Math.round(38 * s)
-  const gaugeY  = Math.round(H * 0.87)
-  const gaugePad = Math.round(W * 0.065)
+  drawGauge(gaugeX,     gaugeY, gaugeR, gaugeSW, 60,  '0', '60',  spd)
+  drawGauge(W - gaugeX, gaugeY, gaugeR, gaugeSW, 130, '0', '130', cadV)
 
-  drawGauge(gaugePad, gaugeY, gaugeR, 0, 60,  '0', '60',  spd)
-  drawGauge(W - gaugePad, gaugeY, gaugeR, 0, 130, '0', '130', cadV)
-
-  // ── Speed/RPM unit labels ─────────────────────────────────────────────────────
-  text('km/h', gaugePad,   gaugeY + gaugeR + Math.round(12*s), 9, 700, DIM, 'center', 'top')
-  text('rpm',  W-gaugePad, gaugeY + gaugeR + Math.round(12*s), 9, 700, DIM, 'center', 'top')
+  // ── Speed/RPM unit labels — mirrors .gauge-lbl (font-size: 0.85cqw ≈ 10px at 1920cqw) ────
+  const lblFontSz = Math.max(7, Math.round(W * 0.0052))
+  text('km/h', gaugeX,     gaugeBotY - Math.round(gaugeH * 0.08), lblFontSz, 700, DIM, 'center', 'top')
+  text('rpm',  W - gaugeX, gaugeBotY - Math.round(gaugeH * 0.08), lblFontSz, 700, DIM, 'center', 'top')
 
   // ── Power zones ───────────────────────────────────────────────────────────────
   const ZONES = [
@@ -671,17 +835,20 @@ function drawHud(ctx, W, H, point, pts, animIdx, progress, totalTime, overlayFor
   }
   const maxC = Math.max(...counts, 1)
 
-  const zx     = Math.round(W * 0.30)
-  const zw     = Math.round(W * 0.40)
-  const zy     = Math.round(H * 0.75)
-  const zH     = Math.round(H * 0.14)
-  const barW   = Math.round((zw - ZONES.length * Math.round(3*s)) / ZONES.length)
-  const barGap = Math.round(3 * s)
+  // CSS .hud-zones: flex:1; margin:0 2%; sits between two 14% gauges with 1% row padding.
+  // Zones span from (1% + 14% + 2%) = 17% to (100% - 17%) = 83% → width = 66%.
+  // .zones-bars { height: 62% } of the gauge container height (same as gauge SVG height).
+  const zx     = Math.round(W * 0.17)                     // 17% from left
+  const zw     = Math.round(W * 0.66)                     // 66% width
+  const zH     = Math.round(gaugeH * 0.62)                // 62% of gauge SVG height
+  const zy     = gaugeBotY - zH                           // bars sit at bottom of row
+  const barGap = Math.max(2, Math.round(2 * s))
+  const barW   = Math.round((zw - ZONES.length * barGap) / ZONES.length)
   const zoneName = ['Recovery','Endurance','Tempo','Threshold','VO2max','Anaerobic','Neuromuscular']
 
-  // Zone title
+  // Zone title (above bars, matching .zones-title margin-bottom:3px)
   const topZone = counts.indexOf(Math.max(...counts))
-  text(zoneName[topZone] ?? 'Power Zones', zx + zw/2, zy - Math.round(10*s), 10, 700, DIM, 'center', 'bottom')
+  text(zoneName[topZone] ?? 'Power Zones', zx + zw/2, zy - Math.round(5*s), 10, 700, DIM, 'center', 'bottom')
 
   ZONES.forEach((zone, i) => {
     const bx     = zx + i * (barW + barGap)
@@ -902,45 +1069,62 @@ function drawHudGoPro(ctx, W, H, point, pts, animIdx, progress, overlayColor = '
   grad.addColorStop(0, 'transparent'); grad.addColorStop(1, 'rgba(0,0,0,0.78)')
   ctx.fillStyle = grad; ctx.fillRect(0, H * 0.65, W, H * 0.35)
 
-  // Large centered speed gauge (r=60 in a 160×110 viewBox, scaled)
-  const gaugeW  = Math.round(W * 0.20 * hs)
-  const gaugeH  = Math.round(gaugeW * 110 / 160)
+  // Large centered speed gauge — mirrors SVG: viewBox="0 0 160 110", cx=80 cy=82 r=60
+  // CSS wrap: width:clamp(100px,18cqw,220px); position:absolute; bottom:0; padding-bottom:0.5%
+  const gaugeW  = Math.round(W * 0.18 * hs)                  // 18cqw matches CSS clamp midpoint
+  const gaugeH  = Math.round(gaugeW * 110 / 160)             // viewBox aspect ratio
   const gaugeCX = W / 2
-  const gaugeCY = H - gaugeH * 0.05
-  const r       = gaugeW * 60 / 160
+  const padB    = Math.round(W * 0.005)                       // 0.5% bottom padding on wrap
+  const gaugeCY = H - padB - Math.round(gaugeH * 28 / 110)   // cy=82 → 28/110 from SVG bottom
+  const r       = gaugeW * 60 / 160                           // r=60 in 160-unit viewBox
+  const arcSW   = Math.max(2, Math.round(6 * gaugeW / 160))  // stroke-width="6" in 160-unit viewBox
 
   const GOPRO_ARC  = 2 * Math.PI * r * 0.75
   const spd        = point?.speedSmooth ?? 0
   const p          = Math.max(0, Math.min(1, spd / 60))
-  const startAngle = (225 - 90) * Math.PI / 180
+  // SVG rotate(-135) shifts stroke start from 0° to 225° (clockwise from right in y-down coords)
+  const startAngle = 225 * Math.PI / 180
 
   // Background arc
   ctx.beginPath()
   ctx.arc(gaugeCX, gaugeCY, r, startAngle, startAngle + GOPRO_ARC / r)
-  ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = Math.round(6 * s)
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = arcSW
   ctx.lineCap = 'round'; ctx.stroke()
 
   // Value arc
   if (p > 0.01) {
     ctx.beginPath()
     ctx.arc(gaugeCX, gaugeCY, r, startAngle, startAngle + (GOPRO_ARC * p) / r)
-    ctx.strokeStyle = AMBER; ctx.lineWidth = Math.round(6 * s)
+    ctx.strokeStyle = AMBER; ctx.lineWidth = arcSW
     ctx.lineCap = 'round'; ctx.stroke()
   }
 
-  // Gauge labels
-  const labelR = r + Math.round(10 * s)
-  const minX = gaugeCX + labelR * Math.cos((225 - 90) * Math.PI / 180)
-  const minY = gaugeCY + labelR * Math.sin((225 - 90) * Math.PI / 180)
-  const maxAngleDeg = 225 + 270
-  const maxX = gaugeCX + labelR * Math.cos((maxAngleDeg - 90) * Math.PI / 180)
-  const maxY = gaugeCY + labelR * Math.sin((maxAngleDeg - 90) * Math.PI / 180)
-  text('0',  minX, minY, 8, 600, DIM, 'center', 'middle')
-  text('60', maxX, maxY, 8, 600, DIM, 'center', 'middle')
+  // Gauge labels — SVG fixed positions: "0" at (9,106), "60" at (136,106) in 160×110 viewBox
+  // font-size="9" in 160-unit viewBox → 9/160 * gaugeW px
+  const svgU  = (u) => u * gaugeW / 160                      // SVG units → canvas px
+  const svgX  = (x) => gaugeCX - gaugeW / 2 + Math.round(svgU(x))
+  const lblY  = H - padB - Math.round(svgU(4))               // y=106 → 4 units from SVG bottom
+  const lblFS = Math.max(7, Math.round(svgU(9)))              // font-size="9"
+  ctx.font = `600 ${lblFS}px ${FONT}`
+  ctx.fillStyle = DIM; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+  ctx.shadowColor = 'rgba(0,0,0,0.85)'; ctx.shadowBlur = Math.round(3 * s)
+  ctx.fillText('0',  svgX(9),   lblY)
+  ctx.fillText('60', svgX(136), lblY)
+  ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'
 
-  // Speed value
-  text(spd.toFixed(0), gaugeCX, gaugeCY + Math.round(5 * s), 26, 700, WHITE, 'center', 'middle')
-  text('KM/H', gaugeCX, gaugeCY + r + Math.round(14 * s), 9, 700, DIM, 'center', 'top')
+  // Speed value — SVG: font-size="30", y=91 (9 units below cy=82)
+  const spdFontPx = Math.max(14, Math.round(svgU(30)))
+  ctx.font = `700 ${spdFontPx}px ${FONT}`
+  ctx.fillStyle = WHITE; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+  ctx.shadowColor = 'rgba(0,0,0,0.85)'; ctx.shadowBlur = Math.round(4 * s)
+  ctx.fillText(spd.toFixed(0), gaugeCX, gaugeCY + Math.round(svgU(9)))
+  ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'
+  // KM/H label — separate div below SVG in preview, sits at bottom of frame
+  ctx.font = `700 ${lblFS}px ${FONT}`
+  ctx.fillStyle = DIM; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
+  ctx.shadowColor = 'rgba(0,0,0,0.85)'; ctx.shadowBlur = Math.round(3 * s)
+  ctx.fillText('KM/H', gaugeCX, H - padB)
+  ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'
 
   drawLocationPill(ctx, W, H, s, locationName, 'gopro', overlayColor)
   drawWatermark(ctx, W, H, s)

@@ -10,8 +10,12 @@
       playsinline
       @timeupdate="handleTimeUpdate"
       @loadedmetadata="handleLoadedMetadata"
+      @canplay="handleCanPlay"
       @ended="$emit('ended')"
     />
+
+    <!-- Hidden preload for next segment — eliminates the pause on segment switch -->
+    <video v-if="nextVideoSrc" :src="nextVideoSrc" preload="auto" style="display:none" muted playsinline />
 
     <!-- WebGL output canvas — replaces video display when shader is ready -->
     <canvas
@@ -30,10 +34,7 @@
     <!-- ── Full HUD (video mode only) ────────────────────────────────────── -->
     <template v-if="overlayFormat === 'classic'">
 
-      <!-- Top progress bar -->
-      <div class="hud-prog-bar">
-        <div class="hud-prog-fill" :style="{ width: barPct + '%' }" />
-      </div>
+
 
       <!-- Lap times box (top-left) -->
       <div class="hud-laps" v-if="totalLaps > 0">
@@ -182,9 +183,6 @@
 
     <!-- ── Minimal HUD (video mode) ─────────────────────────────────────── -->
     <template v-if="overlayFormat === 'minimal'">
-      <div class="hud-prog-bar">
-        <div class="hud-prog-fill" :style="{ width: barPct + '%' }" />
-      </div>
       <div class="minimal-bottom">
         <div class="mini-card">
           <div class="mini-val">{{ speedKmhGauge }}</div>
@@ -222,9 +220,6 @@
 
     <!-- ── GoPro HUD (video mode) ─────────────────────────────────────── -->
     <template v-if="overlayFormat === 'gopro'">
-      <div class="hud-prog-bar">
-        <div class="hud-prog-fill" :style="{ width: barPct + '%' }" />
-      </div>
 
       <!-- GPS coordinates top-left -->
       <div class="gopro-coords">{{ latStr }}&nbsp;&nbsp;&nbsp;{{ lonStr }}</div>
@@ -284,7 +279,6 @@
 
     <!-- ── Sport HUD (video mode) ───────────────────────────────────────── -->
     <template v-if="overlayFormat === 'sport'">
-      <div class="hud-prog-bar"><div class="hud-prog-fill" :style="{ width: barPct + '%' }"/></div>
 
       <!-- Top-left: distance -->
       <div class="sport-top-left">
@@ -346,7 +340,6 @@
 
     <!-- ── Cycling HUD (video mode) ───────────────────────────────────────── -->
     <template v-if="overlayFormat === 'cycling'">
-      <div class="hud-prog-bar"><div class="hud-prog-fill" :style="{ width: barPct + '%' }"/></div>
 
       <!-- Top bar: ELEVATION | compass | TOTAL DISTANCE -->
       <div class="cyc-top-bar">
@@ -482,6 +475,7 @@ const props = defineProps({
   progress:      { type: Number,  default: 0 },
   totalTime:     { type: Number,  default: 0 },
   videoSrc:      { type: String,  default: null },
+  nextVideoSrc:  { type: String,  default: null },
   playing:       { type: Boolean, default: false },
   filterId:      { type: String,  default: 'none' },
   overlayFormat: { type: String,  default: 'classic' },
@@ -593,6 +587,13 @@ async function handleLoadedMetadata() {
     }
   }
 }
+// Resume playback after a segment switch (videoSrc changed while playing=true)
+function handleCanPlay() {
+  if (props.playing && videoRef.value?.paused) {
+    videoRef.value.play().catch(() => {})
+  }
+}
+
 defineExpose({
   seekTo(sec) { if (videoRef.value) videoRef.value.currentTime = sec },
   getVideoEl() { return videoRef.value },

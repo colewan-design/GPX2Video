@@ -42,36 +42,56 @@
       </template>
     </div>
 
-    <!-- Video timeline strip (shows when video loaded) -->
-    <template v-if="hasVideo && videoDuration > 0">
-      <div class="panel-header" style="margin-top:.65rem">
-        <span class="panel-title">Video timeline</span>
-        <span class="range-info range-info--hint">drag handles to trim</span>
-        <span class="range-info">{{ videoTrimRangeText }}</span>
-      </div>
-      <div class="video-wrap" ref="videoWrapRef" @mousedown.prevent="beginVideoScrub" @touchstart.prevent="beginVideoScrub">
-        <!-- Dim outside trim -->
-        <div class="dim dim-left"  :style="{ width: vStartPct + '%' }" />
-        <div class="dim dim-right" :style="{ width: (100 - vEndPct) + '%' }" />
+    <!-- Video timeline strip (always visible) -->
+    <div class="panel-header" style="margin-top:.65rem">
+      <span class="panel-title">Video timeline</span>
+      <span v-if="hasVideo && videoDuration > 0" class="range-info range-info--hint">Ctrl+scroll to zoom · drag clips · drag playhead</span>
+      <span v-if="hasVideo && videoDuration > 0" class="range-info">{{ videoTrimRangeText }}</span>
+    </div>
 
-        <!-- Playhead -->
-        <div class="playhead" :style="{ left: vPlayheadPct + '%' }" />
-
-        <!-- Trim handles -->
-        <div
-          class="handle handle-start"
-          :style="{ left: vStartPct + '%' }"
-          @mousedown.stop.prevent="beginVideoDrag('start', $event)"
-          @touchstart.stop.prevent="beginVideoDrag('start', $event)"
-        />
-        <div
-          class="handle handle-end"
-          :style="{ left: vEndPct + '%' }"
-          @mousedown.stop.prevent="beginVideoDrag('end', $event)"
-          @touchstart.stop.prevent="beginVideoDrag('end', $event)"
-        />
+    <!-- NLE-style video timeline (drag-to-append wrapper) -->
+    <div
+      v-if="hasVideo && videoDuration > 0"
+      class="vtl-drop-wrap"
+      :class="{ 'drop-over': dropOver }"
+      @dragover.prevent="onDragOver"
+      @dragleave="onDragLeave"
+      @drop.prevent="onVideoDrop"
+    >
+      <VideoTimeline
+        :clips="clips"
+        :segments="segments"
+        :video-duration="videoDuration"
+        :timeline-shift="timelineShift"
+        :video-progress="videoProgress"
+        :video-trim-start="videoTrimStart"
+        :video-trim-end="videoTrimEnd"
+        :active-clip-idx="activeClipIdx"
+        @seek="$emit('seek', $event)"
+        @move-clip="$emit('move-clip', $event)"
+        @select-clip="$emit('select-clip', $event)"
+        @reorder-clips="$emit('reorder-clips', $event)"
+        @trim-clip="$emit('trim-clip', $event)"
+        @merge-clips="$emit('merge-clips', $event)"
+      />
+      <div v-if="dropOver" class="vtl-drop-overlay">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3v10M6 9l4 4 4-4"/><rect x="2" y="15" width="16" height="2" rx="1"/></svg>
+        Append video
       </div>
-    </template>
+    </div>
+
+    <!-- Empty video drop zone (always visible when no video) -->
+    <div
+      v-else-if="!hasVideo"
+      class="video-empty-drop video-empty-drop--always"
+      :class="{ 'drop-over': dropOver }"
+      @dragover.prevent="onDragOver"
+      @dragleave="onDragLeave"
+      @drop.prevent="onVideoDrop"
+    >
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3v10M6 9l4 4 4-4"/><rect x="2" y="15" width="16" height="2" rx="1"/></svg>
+      Drop video here or use the Media panel
+    </div>
 
     <!-- Offset row — only with video + timestamps -->
     <div v-if="hasVideo && hasTimestamps" class="offset-row">
@@ -102,6 +122,8 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { fmtTime } from '../utils/geo.js'
+import { useDraggedVideo } from '../composables/useDraggedVideo.js'
+import VideoTimeline from './VideoTimeline.vue'
 
 const props = defineProps({
   points:          { type: Array,   required: true },
@@ -119,13 +141,27 @@ const props = defineProps({
   videoProgress:   { type: Number,  default: 0 },
   windowStartIdx:  { type: Number,  default: 0 },
   windowEndIdx:    { type: Number,  default: 0 },
+  clips:           { type: Array,   default: () => [] },
+  activeClipIdx:   { type: Number,  default: 0 },
+  segments:        { type: Array,   default: () => [] },
+  timelineShift:   { type: Number,  default: 0 },
 })
 
 const emit = defineEmits([
   'update:trimStart', 'update:trimEnd', 'update:manualOffsetSec',
   'update:videoTrimStart', 'update:videoTrimEnd',
-  'seek', 'gpxWindowDrag',
+  'seek', 'gpxWindowDrag', 'drop-video', 'move-clip', 'select-clip', 'reorder-clips', 'trim-clip', 'merge-clips',
 ])
+
+const { draggedFile, isDragging } = useDraggedVideo()
+const dropOver = ref(false)
+
+function onDragOver() { if (isDragging.value) dropOver.value = true }
+function onDragLeave() { dropOver.value = false }
+function onVideoDrop() {
+  dropOver.value = false
+  if (draggedFile.value) emit('drop-video', draggedFile.value)
+}
 
 // ─── Percentages ──────────────────────────────────────────────────────────────
 const N         = computed(() => Math.max(1, props.points.length - 1))
@@ -136,25 +172,22 @@ const endPct    = computed(() => (props.trimEnd   / N.value) * 100)
 const useWindow = computed(() =>
   props.hasVideo && props.hasTimestamps && props.windowEndIdx > props.windowStartIdx
 )
-const winN = computed(() => Math.max(1, props.windowEndIdx - props.windowStartIdx))
 
 // Playhead: always absolute position over the full GPX track
 const activeAnimPct = computed(() =>
   Math.max(0, Math.min((props.animIdx / N.value) * 100, 100))
 )
 
-// ─── Video timeline percentages ───────────────────────────────────────────────
-const vDur        = computed(() => Math.max(1, props.videoDuration))
-const vStartPct   = computed(() => (props.videoTrimStart / vDur.value) * 100)
-const vEndPct     = computed(() => (props.videoTrimEnd   / vDur.value) * 100)
-const vPlayheadPct = computed(() => Math.max(0, Math.min(props.videoProgress * 100, 100)))
-
 const videoTrimRangeText = computed(() => {
   if (!props.videoDuration) return ''
   const fmt = (s) => {
-    const m = Math.floor(s / 60)
+    const m   = Math.floor(s / 60)
     const sec = Math.floor(s % 60).toString().padStart(2, '0')
     return `${m}:${sec}`
+  }
+  if (props.clips && props.clips.length > 1) {
+    const total = props.clips.reduce((sum, c) => sum + (c.end - c.start), 0)
+    return `${props.clips.length} clips  ·  ${fmt(total)}`
   }
   const dur = props.videoTrimEnd - props.videoTrimStart
   return `${fmt(props.videoTrimStart)} → ${fmt(props.videoTrimEnd)}  ·  ${fmt(dur)}`
@@ -179,9 +212,8 @@ const trimRangeText = computed(() => {
 })
 
 // ─── Canvas elevation drawing ─────────────────────────────────────────────────
-const wrapRef      = ref(null)
-const canvasRef    = ref(null)
-const videoWrapRef = ref(null)
+const wrapRef   = ref(null)
+const canvasRef = ref(null)
 let ctx = null
 let ro  = null
 
@@ -270,14 +302,6 @@ onUnmounted(() => {
   window.removeEventListener('mouseup',   endDrag)
   window.removeEventListener('touchmove', onDragMove)
   window.removeEventListener('touchend',  endDrag)
-  window.removeEventListener('mousemove', onVideoDragMove)
-  window.removeEventListener('mouseup',   endVideoDrag)
-  window.removeEventListener('touchmove', onVideoDragMove)
-  window.removeEventListener('touchend',  endVideoDrag)
-  window.removeEventListener('mousemove', onVideoScrubMove)
-  window.removeEventListener('mouseup',   endVideoScrub)
-  window.removeEventListener('touchmove', onVideoScrubMove)
-  window.removeEventListener('touchend',  endVideoScrub)
   window.removeEventListener('mousemove', onWindowPanMove)
   window.removeEventListener('mouseup',   endWindowPan)
   window.removeEventListener('touchmove', onWindowPanMove)
@@ -369,73 +393,7 @@ function endWindowPan() {
   window.removeEventListener('touchend',  endWindowPan)
 }
 
-// ─── Video trim drag ──────────────────────────────────────────────────────────
-let videoDragging = null
 
-function beginVideoDrag(which, event) {
-  videoDragging = which
-  window.addEventListener('mousemove', onVideoDragMove)
-  window.addEventListener('mouseup',   endVideoDrag)
-  window.addEventListener('touchmove', onVideoDragMove, { passive: false })
-  window.addEventListener('touchend',  endVideoDrag)
-}
-
-function onVideoDragMove(event) {
-  if (!videoDragging || !videoWrapRef.value) return
-  event.preventDefault()
-
-  const rect    = videoWrapRef.value.getBoundingClientRect()
-  const clientX = event.touches ? event.touches[0].clientX : event.clientX
-  const rawPct  = (clientX - rect.left) / rect.width
-  const rawSec  = Math.max(0, Math.min(1, rawPct)) * props.videoDuration
-  const minGap  = Math.max(1, props.videoDuration * 0.01)
-
-  if (videoDragging === 'start') {
-    emit('update:videoTrimStart', Math.min(rawSec, props.videoTrimEnd - minGap))
-  } else {
-    emit('update:videoTrimEnd', Math.max(rawSec, props.videoTrimStart + minGap))
-  }
-}
-
-function endVideoDrag() {
-  videoDragging = null
-  window.removeEventListener('mousemove', onVideoDragMove)
-  window.removeEventListener('mouseup',   endVideoDrag)
-  window.removeEventListener('touchmove', onVideoDragMove)
-  window.removeEventListener('touchend',  endVideoDrag)
-}
-
-// ─── Video timeline scrub (click / drag anywhere on the strip) ────────────────
-function _pctToSec(event, el) {
-  const rect    = el.getBoundingClientRect()
-  const clientX = event.touches ? event.touches[0].clientX : event.clientX
-  const pct     = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
-  return pct * props.videoDuration
-}
-
-function beginVideoScrub(event) {
-  if (!videoWrapRef.value) return
-  // Handles stop their own events; this only fires on the bare strip
-  const sec = _pctToSec(event, videoWrapRef.value)
-  emit('seek', sec)
-  window.addEventListener('mousemove', onVideoScrubMove)
-  window.addEventListener('mouseup',   endVideoScrub)
-  window.addEventListener('touchmove', onVideoScrubMove, { passive: false })
-  window.addEventListener('touchend',  endVideoScrub)
-}
-
-function onVideoScrubMove(event) {
-  if (!videoWrapRef.value) return
-  event.preventDefault()
-  emit('seek', _pctToSec(event, videoWrapRef.value))
-}
-
-function endVideoScrub() {
-  window.removeEventListener('mousemove', onVideoScrubMove)
-  window.removeEventListener('mouseup',   endVideoScrub)
-  window.removeEventListener('touchmove', onVideoScrubMove)
-  window.removeEventListener('touchend',  endVideoScrub)
-}
 </script>
 
 <style scoped>
@@ -551,16 +509,33 @@ function endVideoScrub() {
 .handle:hover::before { background: var(--accent); }
 .handle:hover::after  { background: var(--accent); }
 
-/* Video timeline strip */
-.video-wrap {
+/* Wrapper around VideoTimeline that accepts video drops */
+.vtl-drop-wrap {
   position: relative;
-  height: 36px;
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-  background: linear-gradient(to right, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-  cursor: ew-resize;
-  margin-bottom: .5rem;
+  margin-bottom: .4rem;
 }
+.vtl-drop-wrap.drop-over {
+  border-radius: var(--radius-sm);
+  outline: 2px dashed var(--accent);
+  outline-offset: 2px;
+}
+
+/* Translucent overlay shown when dragging over the timeline */
+.vtl-drop-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: var(--radius-sm);
+  pointer-events: none;
+}
+.vtl-drop-overlay svg { width: 15px; height: 15px; }
 
 /* Offset row */
 .offset-row {
@@ -623,4 +598,39 @@ function endVideoScrub() {
   padding: .35rem 0 .5rem;
   line-height: 1.5;
 }
+
+/* ── Drag-and-drop ────────────────────────────────────────────────────────── */
+
+.video-empty-drop {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 40px;
+  margin-top: .65rem;
+  border-radius: var(--radius-sm);
+  border: 2px dashed var(--border2);
+  color: var(--text3);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .05em;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.video-empty-drop svg { width: 15px; height: 15px; flex-shrink: 0; }
+.video-empty-drop.drop-over {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(255,214,10,.07);
+}
+.video-empty-drop--always {
+  margin-top: 0;
+  border-radius: var(--radius-sm);
+  border-style: dashed;
+  margin-bottom: .5rem;
+}
+.video-empty-drop--always:hover {
+  border-color: rgba(255,214,10,.35);
+  color: var(--text2);
+}
+
 </style>
