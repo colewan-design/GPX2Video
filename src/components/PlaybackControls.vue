@@ -43,47 +43,49 @@ const speeds = [1, 2, 5, 10, 20]
 .controls {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 .ctrl-btn {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: .5rem .85rem;
+  gap: 5px;
+  padding: .3rem .7rem;
+  height: 30px;
   font-size: 12px;
-  font-weight: 600;
-  letter-spacing: .03em;
+  font-weight: 500;
   border-radius: var(--radius-md);
   cursor: pointer;
   border: 1px solid var(--border2);
   background: var(--bg3);
-  color: var(--text);
-  transition: all .15s;
+  color: var(--text2);
+  transition: border-color .15s, color .15s, background .15s;
   white-space: nowrap;
 }
-.ctrl-btn svg { width: 14px; height: 14px; flex-shrink: 0; }
+.ctrl-btn svg { width: 13px; height: 13px; flex-shrink: 0; }
 .ctrl-btn:disabled { opacity: .35; cursor: not-allowed; }
 
 .ctrl-play {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #000;
-  box-shadow: 0 0 16px rgba(255,214,10,.22);
+  background: var(--blue);
+  border-color: var(--blue);
+  color: #fff;
+  font-weight: 600;
+  padding: .3rem .9rem;
 }
 .ctrl-play:hover:not(:disabled) {
-  background: #ffe033;
-  box-shadow: 0 0 24px rgba(255,214,10,.4);
+  background: var(--export-hover);
+  border-color: var(--export-hover);
 }
 .ctrl-play:active:not(:disabled) { transform: scale(.97); }
 
 .ctrl-ghost {
   background: transparent;
-  padding: .5rem .6rem;
+  border-color: var(--border);
+  padding: .3rem .5rem;
 }
 .ctrl-ghost:hover:not(:disabled) {
-  border-color: var(--accent-semi);
-  color: var(--accent);
-  background: var(--accent-dim);
+  border-color: var(--border3);
+  color: var(--text);
+  background: var(--bg4);
 }
 
 .speed-select-wrap {
@@ -91,20 +93,25 @@ const speeds = [1, 2, 5, 10, 20]
   border-radius: var(--radius-md);
   background: var(--bg3);
   overflow: hidden;
+  height: 30px;
+  display: flex;
+  align-items: center;
 }
 .speed-select {
   font-size: 12px;
-  font-weight: 600;
-  padding: .48rem .7rem;
+  font-weight: 500;
+  padding: 0 .65rem;
   border: none;
   background: transparent;
-  color: var(--text);
+  color: var(--text2);
   cursor: pointer;
   outline: none;
+  height: 100%;
 }
 .track-name {
   margin-left: auto;
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 400;
   color: var(--text3);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -114,6 +121,5 @@ const speeds = [1, 2, 5, 10, 20]
 @media (max-width: 600px) {
   .track-name { display: none; }
   span { display: none; }
-  .ctrl-play { padding: .5rem .65rem; }
 }
 </style>

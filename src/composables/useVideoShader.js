@@ -160,12 +160,25 @@ export function useVideoShader() {
   let rafId  = null
   let videoEl = null, canvasEl = null
   let uloc = {}
+  let onContextLostCb = null
 
-  function setup(canvas, video) {
+  function setup(canvas, video, { onContextLost } = {}) {
     canvasEl = canvas
     videoEl  = video
+    onContextLostCb = onContextLost ?? null
+
     gl = canvas.getContext('webgl', { alpha: false, antialias: false })
     if (!gl) return false
+
+    // Handle GPU context loss (e.g. Chrome reclaims context under memory pressure
+    // from ONNX Runtime or too many concurrent WebGL contexts).
+    canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault()  // allow future restoration
+      stopLoop()
+      gl = prog = tex = posBuf = uvBuf = null
+      uloc = {}
+      onContextLostCb?.()
+    })
 
     prog = createProgram(gl)
     if (!prog) return false
@@ -244,8 +257,13 @@ export function useVideoShader() {
     gl.uniform2f(uloc.px, 1.0 / vw, 1.0 / vh)
   }
 
+  function isContextOk() {
+    return !!gl && !gl.isContextLost()
+  }
+
   function renderFrame() {
     if (!gl || !videoEl || !prog || !canvasEl) return
+    if (gl.isContextLost()) return
     gl.viewport(0, 0, canvasEl.width, canvasEl.height)
     gl.bindTexture(gl.TEXTURE_2D, tex)
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoEl)
@@ -292,11 +310,14 @@ export function useVideoShader() {
       if (posBuf) gl.deleteBuffer(posBuf)
       if (uvBuf)  gl.deleteBuffer(uvBuf)
       if (prog)   gl.deleteProgram(prog)
+      // Explicitly release the GPU context so Chrome's per-page limit isn't exhausted
+      // when videos are switched or the component is remounted.
+      gl.getExtension('WEBGL_lose_context')?.loseContext()
     }
     gl = prog = tex = posBuf = uvBuf = null
     videoEl = canvasEl = null
     uloc = {}
   }
 
-  return { setup, setFilter, updateUVs, startLoop, stopLoop, resize, renderFrame, destroy }
+  return { setup, setFilter, updateUVs, startLoop, stopLoop, resize, renderFrame, isContextOk, destroy }
 }

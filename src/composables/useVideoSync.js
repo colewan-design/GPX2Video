@@ -10,9 +10,11 @@ export function useVideoSync(gpxPoints) {
   const animIdx          = ref(0)
   const progress         = ref(0)   // trim-relative 0→1 (drives HUD bar)
   const videoAbsProgress = ref(0)   // absolute 0→1 over full timeline
-  const autoOffsetSec    = ref(null)
-  const manualOffsetSec  = ref(0)
-  const autoDetected     = ref(false)
+  const autoOffsetSec       = ref(null)
+  const manualOffsetSec     = ref(0)
+  const autoDetected        = ref(false)
+  const autoDetectSource    = ref(null)   // 'mp4' | 'filedate' | null
+  let   pendingLastModified = null        // file.lastModified saved until duration is known
 
   const trimStart = ref(0)
   const trimEnd   = ref(0)
@@ -52,6 +54,18 @@ export function useVideoSync(gpxPoints) {
     if (!segments.value.length) return
     segments.value = [{ ...segments.value[0], duration: d }]
     clips.value = [{ start: 0, end: d, segmentIdx: 0, segStart: 0 }]
+
+    // Fallback: use file.lastModified as recording-end time when no MP4 timestamp was found
+    if (autoOffsetSec.value === null && pendingLastModified !== null) {
+      const pts = gpxPoints.value
+      if (pts.length && pts[0].time) {
+        const videoStartMs  = pendingLastModified - d * 1000
+        autoOffsetSec.value = (videoStartMs - pts[0].time.getTime()) / 1000
+        autoDetected.value  = true
+        autoDetectSource.value = 'filedate'
+      }
+      pendingLastModified = null
+    }
   }
 
   // Append a new segment to the end of the timeline
@@ -187,6 +201,18 @@ export function useVideoSync(gpxPoints) {
     if (videoSrc.value) _applyTime(lastAbsTime, lastDuration)
   })
 
+  // Re-apply when the offset changes (slider or manual start-time entry).
+  // flush:'sync' so animIdx updates in the same tick as the input event.
+  // We must refresh trimStart/trimEnd from the already-fresh gpxWindowIdx computed
+  // BEFORE calling _applyTime, otherwise the new index gets clamped to the stale window.
+  watch(totalOffsetSec, () => {
+    if (!videoSrc.value) return
+    const { start, end } = gpxWindowIdx.value
+    trimStart.value = start
+    trimEnd.value   = end
+    _applyTime(lastAbsTime, lastDuration)
+  }, { flush: 'sync' })
+
   // GPX window (highlighted region on the elevation strip)
   const gpxWindowIdx = computed(() => {
     const pts = gpxPoints.value
@@ -212,6 +238,18 @@ export function useVideoSync(gpxPoints) {
       end:   find(base + (totalOffsetSec.value + vEnd)   * 1000),
     }
   })
+
+  // Set the sync by saying "at the current video frame, the real-world time is `date`"
+  function setCurrentFrameTime(date) {
+    const pts = gpxPoints.value
+    if (!pts.length || !pts[0].time) return
+    // totalOffset = (date - gpxStart) / 1000 - videoAbsTime
+    const newOffset = (date.getTime() - pts[0].time.getTime()) / 1000 - lastAbsTime
+    autoOffsetSec.value    = newOffset
+    manualOffsetSec.value  = 0
+    autoDetected.value     = false
+    autoDetectSource.value = null
+  }
 
   function setGpxWindowStart(frac) {
     const pts = gpxPoints.value
@@ -241,20 +279,26 @@ export function useVideoSync(gpxPoints) {
     playing.value      = false
     animIdx.value      = trimStart.value
     progress.value     = 0
-    autoOffsetSec.value   = null
-    autoDetected.value    = false
-    manualOffsetSec.value = 0
-    currentAbsTime.value  = 0
+    autoOffsetSec.value    = null
+    autoDetected.value     = false
+    autoDetectSource.value = null
+    manualOffsetSec.value  = 0
+    currentAbsTime.value   = 0
     lastAbsTime  = 0
     lastDuration = 1
+    pendingLastModified = null
 
     const pts = gpxPoints.value
     if (!pts.length || !pts[0].time) return
 
     const creationTime = await parseMp4CreationTime(file)
     if (creationTime) {
-      autoOffsetSec.value = (creationTime.getTime() - pts[0].time.getTime()) / 1000
-      autoDetected.value  = true
+      autoOffsetSec.value    = (creationTime.getTime() - pts[0].time.getTime()) / 1000
+      autoDetected.value     = true
+      autoDetectSource.value = 'mp4'
+    } else if (file.lastModified) {
+      // Store for use in setVideoDuration once duration is known
+      pendingLastModified = file.lastModified
     }
   }
 
@@ -266,9 +310,11 @@ export function useVideoSync(gpxPoints) {
     animIdx.value         = 0
     progress.value        = 0
     videoAbsProgress.value = 0
-    autoOffsetSec.value   = null
-    autoDetected.value    = false
-    manualOffsetSec.value = 0
+    autoOffsetSec.value    = null
+    autoDetected.value     = false
+    autoDetectSource.value = null
+    manualOffsetSec.value  = 0
+    pendingLastModified    = null
     lastAbsTime  = 0
     lastDuration = 1
     trimStart.value      = 0
@@ -302,11 +348,25 @@ export function useVideoSync(gpxPoints) {
   }
 
   function _applyTime(absTime, localDurationSec) {
+    videoAbsProgress.value = videoDuration.value > 0 ? absTime / videoDuration.value : 0
+
     const pts = gpxPoints.value
     if (!pts.length) return
 
     const tStart = trimStart.value
     const tEnd   = trimEnd.value
+
+    const vStart = videoTrimStart.value
+    const vEnd   = Math.max(vStart + 0.001, videoTrimEnd.value)
+    progress.value = Math.max(0, Math.min((absTime - vStart) / (vEnd - vStart), 1))
+
+    // Zero-width GPS window: video offset places it outside the GPS recording range,
+    // or GPS has too few points to span the video. Show data at trimStart so the
+    // overlay reflects the current GPS window position when the user adjusts it.
+    if (tEnd <= tStart) {
+      animIdx.value = Math.max(0, Math.min(tStart, pts.length - 1))
+      return
+    }
 
     let idx
     if (pts[0].time) {
@@ -326,18 +386,11 @@ export function useVideoSync(gpxPoints) {
     }
 
     if (idx < tStart || idx > tEnd) {
-      const vStart = videoTrimStart.value
-      const vEnd   = videoTrimEnd.value > vStart ? videoTrimEnd.value : Math.max(1, videoDuration.value)
-      const rel    = Math.max(0, Math.min((absTime - vStart) / (vEnd - vStart), 1))
+      const rel = Math.max(0, Math.min((absTime - vStart) / (vEnd - vStart), 1))
       idx = Math.round(tStart + rel * (tEnd - tStart))
     }
 
-    animIdx.value          = Math.max(tStart, Math.min(idx, tEnd))
-    videoAbsProgress.value = videoDuration.value > 0 ? absTime / videoDuration.value : 0
-
-    const vStart = videoTrimStart.value
-    const vEnd   = Math.max(vStart + 0.001, videoTrimEnd.value)
-    progress.value = Math.max(0, Math.min((absTime - vStart) / (vEnd - vStart), 1))
+    animIdx.value = Math.max(tStart, Math.min(idx, tEnd))
   }
 
   // Convert a GPX index to an absolute timeline time (for seek-on-trim-drag)
@@ -362,6 +415,7 @@ export function useVideoSync(gpxPoints) {
     autoOffsetSec,
     manualOffsetSec,
     autoDetected,
+    autoDetectSource,
     totalOffsetSec,
     trimStart,
     trimEnd,
@@ -386,6 +440,7 @@ export function useVideoSync(gpxPoints) {
     mergeClips,
     gpxWindowIdx,
     setGpxWindowStart,
+    setCurrentFrameTime,
     loadVideo,
     onTimeUpdate,
     gpxIdxToAbsoluteTime,

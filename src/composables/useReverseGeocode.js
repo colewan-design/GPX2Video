@@ -110,7 +110,7 @@ export function useReverseGeocode() {
     lastKey = key
     clearTimeout(debounceTimer)
     loading.value = true
-    debounceTimer = setTimeout(() => _resolve(lat, lon), 2000)
+    debounceTimer = setTimeout(() => _resolve(lat, lon), 400)
   }
 
   function lookupNow(lat, lon) {

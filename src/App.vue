@@ -4,7 +4,12 @@
     <!-- ── Header ──────────────────────────────────────────────────────────── -->
     <header class="app-header">
       <div class="header-left">
-        <div class="app-logo">GPX<span class="logo-accent">2</span>VIDEO</div>
+        <div class="app-logo">
+          <div class="logo-mark">
+            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 3l9 5-9 5V3z"/></svg>
+          </div>
+          <span class="logo-text">GPX<span>2</span>VIDEO</span>
+        </div>
         <div v-if="gpxPoints.length" class="header-track">
           <span class="track-dot" />
           <span class="track-name">{{ trackName || 'Unnamed Track' }}</span>
@@ -59,25 +64,26 @@
       No timestamps in GPX — speed will read 0. Export from Strava or Garmin for speed data.
     </p>
 
-    <!-- ── Top Toolbar ─────────────────────────────────────────────────────── -->
-    <nav class="top-toolbar">
-      <button
-        v-for="tab in topTabs"
-        :key="tab.id"
-        class="tt-btn"
-        :class="{ active: activeTab === tab.id, 'tt-disabled': tab.disabled }"
-        @click="!tab.disabled && toggleTab(tab.id)"
-      >
-        <span class="tt-icon" v-html="tab.icon" />
-        <span class="tt-label">{{ tab.label }}</span>
-      </button>
-    </nav>
-
     <!-- ── Body ────────────────────────────────────────────────────────────── -->
-    <div class="app-body">
+    <div class="app-body" :class="dragCursorClass">
+
+      <!-- ── Side Nav ──────────────────────────────────────────────────────── -->
+      <nav class="side-nav">
+        <button
+          v-for="tab in topTabs"
+          :key="tab.id"
+          class="sn-btn"
+          :class="{ active: activeTab === tab.id, 'sn-disabled': tab.disabled }"
+          @click="!tab.disabled && toggleTab(tab.id)"
+        >
+          <span class="sn-icon" v-html="tab.icon" />
+          <span class="sn-label">{{ tab.label }}</span>
+        </button>
+      </nav>
 
       <!-- Left Panel -->
-      <aside v-show="activeTab" class="left-panel">
+      <aside v-show="activeTab" class="left-panel" :style="{ width: leftPanelWidth + 'px' }">
+        <div class="resize-handle resize-handle--ew" @mousedown.prevent="startDragLeft" />
 
         <!-- Media -->
         <template v-if="activeTab === 'media'">
@@ -89,8 +95,10 @@
             <div class="lp-label">GPX Source</div>
             <GpxLoader
               :file-name="gpxFileName"
+              :loaded="gpxPoints.length > 0"
               :strava-open="stravaOpen"
               @file="loadFileWithName"
+              @remove="removeGpx"
               @toggle-strava="stravaOpen = !stravaOpen"
             />
             <p v-if="parseError" class="import-error">{{ parseError }}</p>
@@ -102,6 +110,7 @@
           <div class="lp-section">
             <div class="lp-label">Video Source</div>
             <VideoLoader
+              ref="videoLoaderRef"
               @file="onVideoFile"
               @append="onVideoAppend"
               @select="onVideoSelect"
@@ -112,7 +121,7 @@
             <div class="sync-quick-header">
               <span class="lp-label" style="margin:0">Sync Offset</span>
               <span class="sync-badge" :class="autoDetected ? 'auto' : 'manual'">
-                {{ autoDetected ? 'Auto ✓' : 'Manual' }}
+                {{ autoDetected ? (autoDetectSource === 'filedate' ? 'Auto (file date) ✓' : 'Auto ✓') : 'Manual' }}
               </span>
               <span class="sync-val">{{ offsetDisplayLocal }}</span>
             </div>
@@ -130,11 +139,32 @@
 
         <!-- Stats -->
         <template v-if="activeTab === 'stats'">
-          <div class="lp-header">Track Stats</div>
+          <div class="lp-header">Track Stats
+          </div>
           <div v-if="!stats" class="lp-note">Load a GPX file to see stats.</div>
           <div v-else class="lp-section">
             <MetricsRow :stats="stats" />
           </div>
+        </template>
+
+        <!-- Captions -->
+        <template v-if="activeTab === 'captions'">
+          <div class="lp-header">Captions</div>
+          <CaptionEditor
+            :video-src="videoSrc"
+            :status="captionStatus"
+            :progress="captionProgress"
+            :error="captionError"
+            :segments="captionSegments"
+            :model-size="captionModelSize"
+            v-model:style="captionStyle"
+            @transcribe="onCaptionTranscribe"
+            @set-model="captionModelSize = $event"
+            @add="addCaption"
+            @remove="removeCaption"
+            @update="updateCaption"
+            @clear="clearCaptions"
+          />
         </template>
 
       </aside>
@@ -167,6 +197,8 @@
           :overlay-color="overlayColor"
           :player-aspect="playerAspect"
           :location-name="locationName"
+          :caption-segments="captionSegments"
+          v-model:caption-style="captionStyle"
           @timeupdate="onTimeUpdate"
           @loadedmetadata="onVideoMetadata"
           @ended="onVideoEnded"
@@ -197,7 +229,8 @@
       </main>
 
       <!-- Right Panel (Properties) -->
-      <aside class="right-panel">
+      <aside class="right-panel" :style="{ width: rightPanelWidth + 'px' }">
+        <div class="resize-handle resize-handle--ew resize-handle--ew-left" @mousedown.prevent="startDragRight" />
         <!-- Main tabs -->
         <div class="rp-main-tabs">
           <button
@@ -274,7 +307,20 @@
     </div>
 
     <!-- ── Timeline ────────────────────────────────────────────────────────── -->
-    <div class="app-timeline">
+    <div class="app-timeline" :style="timelineHeight ? { height: timelineHeight + 'px' } : {}">
+      <div class="resize-handle resize-handle--ns" @mousedown.prevent="startDragBottom" />
+
+      <!-- Tab bar -->
+      <div class="tl-tabs">
+        <button
+          v-for="t in timelineTabs"
+          :key="t.id"
+          class="tl-tab"
+          :class="{ active: timelineTab === t.id }"
+          @click="timelineTab = t.id"
+        >{{ t.label }}</button>
+      </div>
+
       <SyncPanel
         :points="gpxPoints"
         :anim-idx="activeAnimIdx"
@@ -283,6 +329,8 @@
         :has-video="hasVideo"
         :has-timestamps="hasTimestamps"
         :auto-detected="autoDetected"
+        :auto-detect-source="autoDetectSource"
+        :video-start-time="videoStartTime"
         :manual-offset-sec="manualOffsetSec"
         :total-offset-sec="totalOffsetSec"
         :video-duration="videoDuration"
@@ -295,21 +343,25 @@
         :timeline-shift="timelineShift"
         :active-clip-idx="selectedClipIdx ?? activeClipIndex"
         :segments="segments"
+        :timeline-tab="timelineTab"
         @update:trim-start="onTrimStart"
         @update:trim-end="onTrimEnd"
         @update:manual-offset-sec="setManualOffset"
         @update:video-trim-start="onVideoTrimStart"
         @update:video-trim-end="onVideoTrimEnd"
         @seek="onVideoSeek"
+        @seek-gpx="onGpxSeek"
         @gpx-window-drag="setGpxWindowStart"
         @move-clip="({ index, newStart }) => moveClip(index, newStart)"
         @select-clip="i => { selectedClipIdx = i }"
         @reorder-clips="onReorderClips"
         @trim-clip="onTrimClip"
         @merge-clips="onMergeClips"
+        @set-current-frame-time="setCurrentFrameTime"
         @drop-video="f => hasVideo ? onVideoAppend([f]) : onVideoFile(f)"
+        :captions="captionSegments"
       />
-      <ChartRow :points="gpxPoints" />
+      <ChartRow v-show="timelineTab === 'charts'" :points="gpxPoints" />
     </div>
 
   </div>
@@ -332,6 +384,8 @@ import PlayerSizeBar      from './components/PlayerSizeBar.vue'
 import StickerExport      from './components/StickerExport.vue'
 import StravaConnect      from './components/StravaConnect.vue'
 import SpeedCurveBar      from './components/SpeedCurveBar.vue'
+import CaptionEditor           from './components/CaptionEditor.vue'
+import { useWhisperTranscription } from './composables/useWhisperTranscription.js'
 import { SHADER_PARAMS }  from './utils/filters.js'
 import { useGpxParser }   from './composables/useGpxParser.js'
 import { useAnimation }   from './composables/useAnimation.js'
@@ -349,32 +403,110 @@ const { animIdx: gpxAnimIdx, playing: gpxPlaying, playbackSpeed, progress: gpxPr
 // --- Video sync ---
 const {
   videoSrc, segments, activeSegIdx: vidSegIdx, playing: vidPlaying, animIdx: vidAnimIdx, progress: vidProgress,
-  videoAbsProgress: vidAbsProgress, autoDetected, manualOffsetSec, totalOffsetSec,
+  videoAbsProgress: vidAbsProgress, autoDetected, autoDetectSource, manualOffsetSec, totalOffsetSec,
   trimStart, trimEnd, videoDuration, videoTrimStart, videoTrimEnd,
   clips, timelineShift, activeClipIndex, currentAbsTime,
   splitAtTime, deleteClip, moveClip, reorderClips, trimClip, mergeClips,
   setVideoTrimStart, setVideoTrimEnd,
   setVideoDuration, addSegment, advanceSegment, seekToAbsolute,
-  gpxWindowIdx, setGpxWindowStart, loadVideo,
+  gpxWindowIdx, setGpxWindowStart, setCurrentFrameTime, loadVideo,
   onTimeUpdate: processTimeUpdate, gpxIdxToAbsoluteTime, cleanup: cleanupVideo,
 } = useVideoSync(gpxPoints)
+
+// ── Panel resize ─────────────────────────────────────────────────────────────
+const leftPanelWidth  = ref(260)
+const rightPanelWidth = ref(248)
+const timelineHeight  = ref(null)
+
+const dragging = ref(null) // 'left' | 'right' | 'bottom'
+const dragCursorClass = computed(() => ({
+  'is-dragging-ew': dragging.value === 'left' || dragging.value === 'right',
+  'is-dragging-ns': dragging.value === 'bottom',
+}))
+
+let _dragStartX = 0, _dragStartY = 0, _dragStartSize = 0
+let _appTimelineEl = null
+
+function startDragLeft(e) {
+  dragging.value = 'left'; _dragStartX = e.clientX; _dragStartSize = leftPanelWidth.value
+  _attachDragListeners()
+}
+function startDragRight(e) {
+  dragging.value = 'right'; _dragStartX = e.clientX; _dragStartSize = rightPanelWidth.value
+  _attachDragListeners()
+}
+function startDragBottom(e) {
+  dragging.value = 'bottom'; _dragStartY = e.clientY
+  _appTimelineEl = e.currentTarget.parentElement
+  _dragStartSize = _appTimelineEl.offsetHeight
+  _attachDragListeners()
+}
+function _attachDragListeners() {
+  document.addEventListener('mousemove', _onDragMove)
+  document.addEventListener('mouseup', _stopDrag)
+}
+function _onDragMove(e) {
+  if (dragging.value === 'left') {
+    leftPanelWidth.value = Math.max(160, Math.min(520, _dragStartSize + (e.clientX - _dragStartX)))
+  } else if (dragging.value === 'right') {
+    rightPanelWidth.value = Math.max(160, Math.min(520, _dragStartSize - (e.clientX - _dragStartX)))
+  } else if (dragging.value === 'bottom') {
+    timelineHeight.value = Math.max(80, Math.min(600, _dragStartSize - (e.clientY - _dragStartY)))
+  }
+}
+function _stopDrag() {
+  dragging.value = null
+  document.removeEventListener('mousemove', _onDragMove)
+  document.removeEventListener('mouseup', _stopDrag)
+}
 
 const selectedClipIdx  = ref(null)  // user-click selection; null = fall back to activeClipIndex
 const videoFileName    = ref(null)
 const gpxFileName      = ref(null)
 const stravaOpen       = ref(false)
 const videoStageRef    = ref(null)
+const videoLoaderRef   = ref(null)
 const videoFilter      = ref('none')
 const overlayFormat    = ref('classic')
 const overlayColor     = ref('#00ff88')
 const playerAspect     = ref('16:9')
 const speedCurvePreset = ref('normal')
 const activeTab        = ref('media')
+const captionStyle     = ref({ position: 'bottom', fontSize: 'medium', background: true })
+
+const {
+  status: captionStatus, progress: captionProgress, error: captionError,
+  segments: captionSegments, modelSize: captionModelSize,
+  transcribe: runTranscription,
+  addSegment: addCaption, removeSegment: removeCaption,
+  updateSegment: updateCaption, clearSegments: clearCaptions,
+} = useWhisperTranscription()
+
+async function onCaptionTranscribe() {
+  if (!videoSrc.value) return
+  const res  = await fetch(videoSrc.value)
+  const blob = await res.blob()
+  await runTranscription(blob)
+}
 const rightTab         = ref('video')
+const timelineTab      = ref('video')
+
+const timelineTabs = [
+  { id: 'gpx',    label: 'GPX' },
+  { id: 'video',  label: 'Video' },
+  { id: 'sync',   label: 'Sync' },
+  { id: 'charts', label: 'Charts' },
+]
 
 const pendingSeekAfterLoad = ref(null)
 const pendingSameSegSeek   = ref(null)   // target localTime for in-progress same-seg cut seek
 const hasVideo = computed(() => !!videoSrc.value)
+
+const videoStartTime = computed(() => {
+  const pts = gpxPoints.value
+  if (!pts.length || !pts[0].time) return null
+  return new Date(pts[0].time.getTime() + totalOffsetSec.value * 1000)
+})
 
 // --- Top Toolbar Tabs (activate left panel) ---
 const topTabs = [
@@ -431,9 +563,8 @@ const topTabs = [
     </svg>`,
   },
   {
-    id: null,
+    id: 'captions',
     label: 'Captions',
-    disabled: true,
     icon: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
       <rect x="2" y="13" width="16" height="4" rx="1"/>
       <path d="M5 15h4M11 15h4"/>
@@ -500,9 +631,10 @@ async function onVideoAppend(files) {
     const duration = await new Promise(resolve => {
       const v     = document.createElement('video')
       v.preload   = 'metadata'
-      v.src       = src
-      v.onloadedmetadata = () => { resolve(v.duration); v.src = '' }
-      v.onerror          = () => resolve(0)
+      const timer = setTimeout(() => { v.src = ''; resolve(0) }, 15000)
+      v.onloadedmetadata = () => { clearTimeout(timer); resolve(v.duration); v.src = '' }
+      v.onerror          = () => { clearTimeout(timer); resolve(0) }
+      v.src = src
     })
     addSegment(src, duration, file.name)
   }
@@ -521,13 +653,15 @@ function onExport() {
   const videoEl = videoStageRef.value?.getVideoEl()
   startExport(
     videoEl, segments.value, gpxPoints.value, totalOffsetSec.value,
-    stats.value?.totalTime ?? 0, trimStart.value, trimEnd.value,
+    stats.value?.totalTime ?? videoDuration.value ?? 0, trimStart.value, trimEnd.value,
     videoTrimStart.value, videoTrimEnd.value,
     overlayFormat.value, overlayColor.value,
     locationName.value,
     SHADER_PARAMS[videoFilter.value] ?? SHADER_PARAMS.none,
     speedCurvePreset.value,
-    clips.value,
+    gpxPoints.value.length ? clips.value : null,
+    captionSegments.value,
+    captionStyle.value,
   )
 }
 
@@ -640,7 +774,7 @@ function onTimeUpdate({ currentTime, duration }) {
   }
 }
 
-function onVideoMetadata({ duration }) {
+function onVideoMetadata({ duration, videoWidth, videoHeight }) {
   if (pendingSeekAfterLoad.value !== null) {
     const t = pendingSeekAfterLoad.value
     pendingSeekAfterLoad.value = null; pendingSameSegSeek.value = null
@@ -649,12 +783,16 @@ function onVideoMetadata({ duration }) {
   }
   if (clips.value.length === 0) {
     setVideoDuration(duration)
+    if (videoWidth && videoHeight) {
+      playerAspect.value = videoHeight > videoWidth ? '9:16' : '16:9'
+    }
   }
 }
 
 function onVideoTrimStart(val) { setVideoTrimStart(val); _doSeek(val) }
 function onVideoTrimEnd(val)   { setVideoTrimEnd(val);   _doSeek(val) }
 function onVideoSeek(sec)      { _doSeek(sec) }
+function onGpxSeek(idx)        { gpxAnimIdx.value = Math.max(0, Math.min(idx, gpxPoints.value.length - 1)) }
 
 function onVideoEnded() {
   const activeClips = clips.value
@@ -719,9 +857,15 @@ function onReset() {
 
 function resetAll() {
   gpxReset(); cleanupVideo(); geocodeClear()
+  videoLoaderRef.value?.clearCache()
   videoFileName.value = null; gpxFileName.value = null
   stravaOpen.value = false; videoFilter.value = 'none'
   pendingSeekAfterLoad.value = null; pendingSameSegSeek.value = null
+  gpxPoints.value = []; stats.value = null; parseError.value = ''
+}
+function removeGpx() {
+  gpxReset(); geocodeClear()
+  gpxFileName.value = null; stravaOpen.value = false
   gpxPoints.value = []; stats.value = null; parseError.value = ''
 }
 function setManualOffset(val) { manualOffsetSec.value = val }
@@ -752,7 +896,7 @@ function onKeyDown(e) {
   if ((e.key === 'Delete' || e.key === 'Backspace') && !e.ctrlKey && !e.metaKey) { e.preventDefault(); onDeleteClip(); return }
   if (e.key === ' ' && !e.ctrlKey && !e.metaKey) { e.preventDefault(); onToggle() }
 }
-function onStravaGpx(gpxString) {
+function onStravaGpx(gpxString, activity) {
   parseGPX(gpxString)
   gpxFileName.value = null
   stravaOpen.value  = false
@@ -773,8 +917,9 @@ function onStravaGpx(gpxString) {
 .app-header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: .4rem .75rem;
+  gap: 8px;
+  padding: 0 12px;
+  height: 44px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   background: var(--bg2);
@@ -787,14 +932,28 @@ function onStravaGpx(gpxString) {
   flex: 1;
 }
 .app-logo {
-  font-size: 14px;
-  font-weight: 800;
-  letter-spacing: .18em;
-  text-transform: uppercase;
-  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
   flex-shrink: 0;
 }
-.logo-accent { color: var(--accent); }
+.logo-mark {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: var(--blue);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.logo-mark svg { width: 12px; height: 12px; color: #fff; }
+.logo-text {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+.logo-text span { color: var(--text2); font-weight: 400; }
 .header-track {
   display: flex;
   align-items: center;
@@ -803,16 +962,16 @@ function onStravaGpx(gpxString) {
   overflow: hidden;
 }
 .track-dot {
-  width: 6px; height: 6px;
+  width: 5px; height: 5px;
   border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 8px var(--accent-glow);
+  background: var(--green);
   flex-shrink: 0;
   animation: pulse 2s ease infinite;
 }
-@keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.5 } }
+@keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.4 } }
 .track-name {
   font-size: 12px;
+  font-weight: 400;
   color: var(--text2);
   white-space: nowrap;
   overflow: hidden;
@@ -829,102 +988,50 @@ function onStravaGpx(gpxString) {
   text-overflow: ellipsis;
   flex-shrink: 1;
 }
-.track-location svg { width: 10px; height: 10px; flex-shrink: 0; opacity: .6; }
+.track-location svg { width: 10px; height: 10px; flex-shrink: 0; opacity: .5; }
 .header-tools {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
 }
 .header-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-shrink: 0;
 }
 .hdr-btn {
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: .3rem .65rem;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: .04em;
+  padding: .28rem .6rem;
+  height: 28px;
+  font-size: 12px;
+  font-weight: 500;
   border-radius: var(--radius-md);
   border: 1px solid var(--border2);
-  background: transparent;
+  background: var(--bg3);
   color: var(--text2);
   cursor: pointer;
-  transition: border-color .15s, color .15s;
+  transition: border-color .15s, color .15s, background .15s;
   white-space: nowrap;
 }
-.hdr-btn:hover:not(:disabled) { border-color: var(--accent-semi); color: var(--accent); }
-.hdr-btn--danger:hover:not(:disabled) { border-color: rgba(255,77,77,.4); color: var(--red); }
+.hdr-btn:hover:not(:disabled) {
+  border-color: var(--border3);
+  color: var(--text);
+  background: var(--bg4);
+}
+.hdr-btn--danger:hover:not(:disabled) { border-color: rgba(239,68,68,.4); color: var(--red); background: rgba(239,68,68,.06); }
 .hdr-btn:disabled { opacity: .35; cursor: not-allowed; }
-.hdr-btn svg { width: 12px; height: 12px; }
+.hdr-btn svg { width: 12px; height: 12px; flex-shrink: 0; }
 
 .warn-banner {
   font-size: 11px;
-  color: #e5ac00;
-  background: rgba(229,172,0,.07);
-  border-bottom: 1px solid rgba(229,172,0,.2);
-  padding: .45rem .75rem;
+  color: #f59e0b;
+  background: rgba(245,158,11,.07);
+  border-bottom: 1px solid rgba(245,158,11,.18);
+  padding: .4rem .75rem;
   flex-shrink: 0;
-}
-
-/* ── Top Toolbar ───────────────────────────────────────────────────────────── */
-.top-toolbar {
-  display: flex;
-  align-items: stretch;
-  gap: 0;
-  padding: 0 6px;
-  background: var(--bg2);
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.top-toolbar::-webkit-scrollbar { display: none; }
-
-.tt-btn {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  padding: 8px 14px;
-  border: none;
-  background: transparent;
-  color: var(--text3);
-  cursor: pointer;
-  position: relative;
-  transition: color .15s;
-  flex-shrink: 0;
-  min-width: 56px;
-}
-.tt-btn::after {
-  content: '';
-  position: absolute;
-  bottom: 0;
-  left: 8px; right: 8px;
-  height: 2px;
-  border-radius: 2px 2px 0 0;
-  background: transparent;
-  transition: background .15s;
-}
-.tt-btn:hover:not(.tt-disabled) { color: var(--text2); }
-.tt-btn.active { color: var(--accent); }
-.tt-btn.active::after { background: var(--accent); }
-.tt-btn.tt-disabled { opacity: .35; cursor: not-allowed; }
-
-.tt-icon { width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; }
-.tt-icon :deep(svg) { width: 20px; height: 20px; }
-.tt-label {
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: .04em;
-  text-align: center;
-  line-height: 1;
-  white-space: nowrap;
 }
 
 /* ── Body ──────────────────────────────────────────────────────────────────── */
@@ -934,6 +1041,99 @@ function onStravaGpx(gpxString) {
   min-height: 0;
   overflow: hidden;
 }
+
+/* ── Side Nav (vertical icon toolbar) ─────────────────────────────────────── */
+.side-nav {
+  width: 64px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  background: var(--bg2);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+}
+.side-nav::-webkit-scrollbar { display: none; }
+
+.sn-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: 52px;
+  padding: 8px 0 7px;
+  border: none;
+  background: transparent;
+  color: var(--text3);
+  cursor: pointer;
+  border-radius: var(--radius-lg);
+  transition: color .15s, background .15s;
+  flex-shrink: 0;
+  position: relative;
+}
+.sn-btn:hover:not(.sn-disabled) {
+  color: var(--text2);
+  background: var(--bg4);
+}
+.sn-btn.active {
+  color: var(--text);
+  background: var(--bg5);
+}
+.sn-btn.sn-disabled {
+  opacity: .3;
+  cursor: not-allowed;
+}
+
+.sn-icon {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.sn-icon :deep(svg) {
+  width: 20px;
+  height: 20px;
+}
+.sn-label {
+  font-size: 9.5px;
+  font-weight: 500;
+  text-align: center;
+  line-height: 1;
+  white-space: nowrap;
+  letter-spacing: 0;
+}
+
+/* ── Resize handles ─────────────────────────────────────────────────────────── */
+.resize-handle {
+  position: absolute;
+  z-index: 100;
+  background: transparent;
+  transition: background .12s;
+}
+.resize-handle:hover, .resize-handle:active { background: var(--border3); }
+.resize-handle--ew {
+  top: 0; right: -2px; bottom: 0;
+  width: 4px;
+  cursor: col-resize;
+}
+.resize-handle--ew-left {
+  right: auto;
+  left: -2px;
+}
+.resize-handle--ns {
+  top: -2px; left: 0; right: 0;
+  height: 4px;
+  cursor: row-resize;
+}
+.is-dragging-ew, .is-dragging-ew * { cursor: col-resize !important; user-select: none !important; }
+.is-dragging-ns, .is-dragging-ns * { cursor: row-resize !important; user-select: none !important; }
 
 /* ── Left Panel ────────────────────────────────────────────────────────────── */
 .left-panel {
@@ -945,54 +1145,53 @@ function onStravaGpx(gpxString) {
   flex-direction: column;
   overflow-y: auto;
   overflow-x: hidden;
+  position: relative;
 }
 
 /* Left panel tab row (Import / Record) */
 .lp-tabs {
   display: flex;
-  gap: 0;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  padding: 0 12px;
 }
 .lp-tab {
-  flex: 1;
-  padding: .5rem;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: .04em;
+  padding: .55rem .5rem;
+  font-size: 12px;
+  font-weight: 500;
   border: none;
   background: transparent;
   color: var(--text3);
   cursor: pointer;
   border-bottom: 2px solid transparent;
   transition: color .15s, border-color .15s;
+  margin-bottom: -1px;
 }
-.lp-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.lp-tab.active { color: var(--text); border-bottom-color: var(--text); }
 .lp-tab:hover:not(.active) { color: var(--text2); }
 
 .lp-header {
-  padding: .6rem .9rem .45rem;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: .12em;
-  text-transform: uppercase;
-  color: var(--accent);
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  height: 44px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
-.lp-section { padding: .6rem .85rem; }
+.lp-section { padding: .65rem 12px; }
 .lp-label {
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: .14em;
-  text-transform: uppercase;
+  font-size: 11px;
+  font-weight: 500;
   color: var(--text3);
   margin-bottom: .5rem;
 }
 .lp-divider { height: 1px; background: var(--border); flex-shrink: 0; }
 .lp-note {
-  padding: .65rem .9rem;
-  font-size: 11px;
+  padding: .65rem 12px;
+  font-size: 12px;
   color: var(--text3);
   line-height: 1.5;
 }
@@ -1004,25 +1203,24 @@ function onStravaGpx(gpxString) {
   margin-bottom: .5rem;
 }
 .sync-badge {
-  font-size: 9px;
-  font-weight: 700;
-  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
   border-radius: 20px;
-  letter-spacing: .06em;
 }
-.sync-badge.auto  { background: rgba(34,197,94,.12); color: var(--accent-green); border: 1px solid rgba(34,197,94,.25); }
-.sync-badge.manual { background: var(--accent-dim); color: var(--accent); border: 1px solid var(--accent-semi); }
-.sync-val { margin-left: auto; font-size: 11px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
-.sync-slider { width: 100%; accent-color: var(--accent); cursor: pointer; height: 20px; }
+.sync-badge.auto  { background: rgba(34,197,94,.12); color: var(--green); border: 1px solid rgba(34,197,94,.22); }
+.sync-badge.manual { background: var(--bg4); color: var(--text2); border: 1px solid var(--border2); }
+.sync-val { margin-left: auto; font-size: 12px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.sync-slider { width: 100%; accent-color: var(--blue); cursor: pointer; height: 20px; }
 
 .import-error {
   font-size: 11px;
   color: var(--red);
   margin-top: .4rem;
   padding: .4rem .6rem;
-  background: rgba(255,77,77,.06);
-  border-radius: var(--radius-sm);
-  border: 1px solid rgba(255,77,77,.18);
+  background: rgba(239,68,68,.06);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(239,68,68,.18);
   line-height: 1.4;
 }
 .strava-inline {
@@ -1068,18 +1266,17 @@ function onStravaGpx(gpxString) {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: .06em;
-  color: var(--accent);
-  background: rgba(9,10,15,.82);
-  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--green);
+  background: rgba(20,20,20,.88);
+  padding: 3px 9px;
   border-radius: 20px;
-  border: 1px solid var(--accent-semi);
+  border: 1px solid rgba(34,197,94,.22);
   backdrop-filter: blur(8px);
   pointer-events: none;
 }
-.synced-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 6px var(--accent-glow); }
+.synced-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--green); }
 
 /* Timecode display */
 .timecode-bar {
@@ -1087,28 +1284,26 @@ function onStravaGpx(gpxString) {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: .35rem 1rem;
+  padding: .32rem 1rem;
   flex-shrink: 0;
   width: 100%;
-  box-sizing: border-box;
   border-bottom: 1px solid var(--border);
   background: var(--bg2);
 }
 .timecode-val {
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 500;
   color: var(--text);
   font-variant-numeric: tabular-nums;
   font-family: 'SF Mono', 'Fira Code', monospace;
-  letter-spacing: .08em;
+  letter-spacing: .06em;
 }
 .timecode-total {
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 400;
   color: var(--text3);
   font-variant-numeric: tabular-nums;
   font-family: 'SF Mono', 'Fira Code', monospace;
-  letter-spacing: .06em;
 }
 
 .canvas-empty {
@@ -1127,15 +1322,14 @@ function onStravaGpx(gpxString) {
   gap: 12px;
 }
 .canvas-empty-inner p {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text3);
-  letter-spacing: .06em;
 }
 .controls-bar {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: .6rem .85rem;
+  padding: .55rem 12px;
   border-top: 1px solid var(--border);
   flex-shrink: 0;
   width: 100%;
@@ -1151,25 +1345,24 @@ function onStravaGpx(gpxString) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  position: relative;
 }
 
 /* Main tabs row */
 .rp-main-tabs {
   display: flex;
-  gap: 0;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   overflow-x: auto;
   scrollbar-width: none;
+  padding: 0 8px;
 }
 .rp-main-tabs::-webkit-scrollbar { display: none; }
 
 .rp-main-tab {
-  flex: 1;
-  padding: .5rem .3rem;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: .04em;
+  padding: .5rem .45rem;
+  font-size: 12px;
+  font-weight: 500;
   border: none;
   background: transparent;
   color: var(--text3);
@@ -1177,33 +1370,33 @@ function onStravaGpx(gpxString) {
   border-bottom: 2px solid transparent;
   transition: color .15s, border-color .15s;
   white-space: nowrap;
+  margin-bottom: -1px;
 }
-.rp-main-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.rp-main-tab.active { color: var(--text); border-bottom-color: var(--text); }
 .rp-main-tab:hover:not(.active) { color: var(--text2); }
 
 /* Sub-tabs row */
 .rp-sub-tabs {
   display: flex;
-  gap: 4px;
-  padding: .45rem .7rem;
+  gap: 3px;
+  padding: .4rem 10px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   flex-wrap: wrap;
 }
 .rp-sub-tab {
-  padding: .2rem .55rem;
-  font-size: 10px;
-  font-weight: 600;
-  border-radius: var(--radius-sm);
+  padding: .22rem .55rem;
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: var(--radius-md);
   border: 1px solid transparent;
   background: transparent;
   color: var(--text3);
   cursor: pointer;
-  letter-spacing: .03em;
   transition: background .15s, color .15s, border-color .15s;
 }
 .rp-sub-tab.active {
-  background: var(--bg3);
+  background: var(--bg4);
   color: var(--text);
   border-color: var(--border2);
 }
@@ -1220,15 +1413,13 @@ function onStravaGpx(gpxString) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: .5rem .8rem .3rem;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: .1em;
-  text-transform: uppercase;
+  padding: .6rem 12px .3rem;
+  font-size: 11px;
+  font-weight: 600;
   color: var(--text2);
 }
 
-.rp-section { padding: .4rem .8rem .6rem; }
+.rp-section { padding: .35rem 12px .55rem; }
 
 .rp-row {
   display: flex;
@@ -1237,16 +1428,15 @@ function onStravaGpx(gpxString) {
   margin-bottom: .4rem;
 }
 .rp-label {
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: .12em;
-  text-transform: uppercase;
-  color: var(--text3);
-}
-.rp-divider { height: 1px; background: var(--border); margin: .2rem 0; }
-.rp-note {
-  padding: .6rem .8rem;
   font-size: 11px;
+  font-weight: 400;
+  color: var(--text3);
+  min-width: 52px;
+}
+.rp-divider { height: 1px; background: var(--border); margin: .25rem 0; }
+.rp-note {
+  padding: .6rem 12px;
+  font-size: 12px;
   color: var(--text3);
   line-height: 1.5;
 }
@@ -1257,31 +1447,32 @@ function onStravaGpx(gpxString) {
   background: var(--bg2);
   flex-shrink: 0;
   overflow: hidden;
+  position: relative;
 }
-.timeline-empty { }
-.timeline-empty-inner {
+
+.tl-tabs {
   display: flex;
-  align-items: stretch;
-  height: 56px;
+  gap: 0;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
 }
-.tl-track-head {
-  width: 60px;
-  flex-shrink: 0;
-  border-right: 1px solid var(--border);
-  background: var(--bg3);
+.tl-tab {
+  padding: 0 14px;
+  height: 36px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text3);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  margin-bottom: -1px;
+  transition: color .15s, border-color .15s;
 }
-.tl-track-body {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  padding: .5rem .75rem;
-}
-.timeline-empty-track {
-  flex: 1;
-  height: 28px;
-  border-radius: 4px;
-  background: repeating-linear-gradient(90deg, var(--border) 0px, var(--border) 1px, transparent 1px, transparent 48px);
-  border: 1px solid var(--border);
-  opacity: 0.5;
+.tl-tab:hover { color: var(--text2); }
+.tl-tab.active {
+  color: var(--text);
+  border-bottom-color: var(--text);
 }
 </style>

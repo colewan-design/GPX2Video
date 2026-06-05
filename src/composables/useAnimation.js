@@ -17,10 +17,9 @@ export function useAnimation(gpxPoints) {
 
   function play() {
     if (playing.value) return
+    if (animIdx.value >= gpxPoints.value.length - 1) animIdx.value = 0
     playing.value = true
     lastTime = null
-    // Bug fix: always enter via requestAnimationFrame — never call tick() directly
-    // (direct call passes undefined as ts, causing NaN cascade through elapsed/stepsPerFrame/animIdx)
     rafId = requestAnimationFrame(tick)
   }
 

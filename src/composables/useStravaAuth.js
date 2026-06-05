@@ -24,7 +24,7 @@ export function useStravaAuth() {
   // ── OAuth redirect ──────────────────────────────────────────────────────────
 
   function authorize() {
-    const redirectUri = window.location.origin + window.location.pathname
+    const redirectUri = window.location.origin + '/'
     const params = new URLSearchParams({
       client_id:       CLIENT_ID,
       redirect_uri:    redirectUri,

@@ -254,6 +254,10 @@
           </div>
           <div class="gopro-stat-val">{{ currentElevM }} <span class="gopro-stat-unit">M</span></div>
         </div>
+        <div v-if="goproDateTime" class="gopro-datetime-block">
+          <div class="gopro-datetime-time">{{ goproDateTime.time }}</div>
+          <div class="gopro-datetime-date">{{ goproDateTime.date }}</div>
+        </div>
       </div>
 
       <!-- Bottom-center large speed gauge -->
@@ -413,7 +417,9 @@
     <!-- ── Location name ────────────────────────────────────────────────── -->
     <div v-if="locationName" class="hud-location" :style="locationStyle">
       <svg viewBox="0 0 12 16" fill="currentColor" class="hud-location-pin"><path d="M6 0a5 5 0 0 1 5 5c0 4-5 11-5 11S1 9 1 5a5 5 0 0 1 5-5zm0 3a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>
-      <span>{{ locationName }}</span>
+      <span class="hud-location-lines">
+        <span v-for="(part, i) in locationParts" :key="i">{{ part.trim() }}</span>
+      </span>
     </div>
 
     <!-- ── Logo watermark ──────────────────────────────────────────────── -->
@@ -450,6 +456,24 @@
       </div>
     </div>
 
+    <!-- ── Caption overlay ───────────────────────────────────────────────── -->
+    <div
+      v-if="videoSrc && currentCaption"
+      class="caption-overlay"
+      :class="[
+        `caption--${captionStyle.fontSize}`,
+        { 'caption--bg': captionStyle.background },
+        { 'caption--bottom': capY === null && captionStyle.position === 'bottom' },
+        { 'caption--top':    capY === null && captionStyle.position === 'top' },
+        { 'caption--active': capDragging || capResizing },
+      ]"
+      :style="capOverlayStyle"
+      @mousedown.stop.prevent="startCapDrag"
+    >
+      {{ currentCaption }}
+      <div class="cap-resize-handle" @mousedown.stop.prevent="startCapResize" title="Resize" />
+    </div>
+
     <!-- ── Fullscreen toggle button ─────────────────────────────────────── -->
     <button class="fullscreen-btn" @click="toggleFullscreen" :title="isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'">
       <svg v-if="!isFullscreen" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -481,10 +505,97 @@ const props = defineProps({
   overlayFormat: { type: String,  default: 'classic' },
   overlayColor:  { type: String,  default: '#f59e0b' },
   playerAspect:  { type: String,  default: '16:9' },
-  locationName:  { type: String,  default: '' },
+  locationName:     { type: String,  default: '' },
+  captionSegments:  { type: Array,   default: () => [] },
+  captionStyle:     { type: Object,  default: () => ({ position: 'bottom', fontSize: 'medium', background: true }) },
 })
 
-const emit = defineEmits(['timeupdate', 'ended', 'loadedmetadata'])
+const emit = defineEmits(['timeupdate', 'ended', 'loadedmetadata', 'update:captionStyle'])
+
+// ── Caption helpers ───────────────────────────────────────────────────────────
+// videoCurrentTimeSec is updated by handleTimeUpdate — always in seconds,
+// matching Whisper's timestamp format directly.
+const videoCurrentTimeSec = ref(0)
+
+const currentCaption = computed(() => {
+  const t = videoCurrentTimeSec.value
+  const seg = props.captionSegments.find(s => t >= s.start && t < s.end)
+  return seg?.text ?? null
+})
+
+// ── Caption drag / resize ─────────────────────────────────────────────────────
+const capX        = ref(props.captionStyle.capX ?? 50)   // center-x %
+const capY        = ref(props.captionStyle.capY ?? null) // top-y % (null = use CSS class)
+const capW        = ref(props.captionStyle.capW ?? 80)   // width %
+const capDragging = ref(false)
+const capResizing = ref(false)
+
+// Reset to class-based position when the top/bottom button is clicked
+watch(() => props.captionStyle.position, () => { capY.value = null; capX.value = 50 })
+
+const capOverlayStyle = computed(() => {
+  const base = { width: capW.value + '%', maxWidth: 'none' }
+  if (capY.value !== null) {
+    return { ...base, left: capX.value + '%', top: capY.value + '%', bottom: 'auto', transform: 'translateX(-50%)' }
+  }
+  return { ...base, left: '50%', transform: 'translateX(-50%)' }
+})
+
+let capDragDs = null
+
+function startCapDrag(e) {
+  if (e.target.classList.contains('cap-resize-handle')) return
+  const stageRect = stageRef.value.getBoundingClientRect()
+  const elRect    = e.currentTarget.getBoundingClientRect()
+  // Snapshot current visual center-x and top-y before switching to inline positioning
+  const curCX = ((elRect.left + elRect.width / 2) - stageRect.left) / stageRect.width  * 100
+  const curTY = (elRect.top - stageRect.top) / stageRect.height * 100
+  capX.value = Math.max(5, Math.min(95, curCX))
+  capY.value = Math.max(0, Math.min(95, curTY))
+  capDragDs = { stageRect, sx: e.clientX, sy: e.clientY, ox: capX.value, oy: capY.value }
+  capDragging.value = true
+  window.addEventListener('mousemove', onCapDragMove)
+  window.addEventListener('mouseup',   endCapDrag)
+}
+
+function onCapDragMove(e) {
+  if (!capDragDs) return
+  const { stageRect, sx, sy, ox, oy } = capDragDs
+  capX.value = Math.max(5,  Math.min(95, ox + (e.clientX - sx) / stageRect.width  * 100))
+  capY.value = Math.max(0,  Math.min(95, oy + (e.clientY - sy) / stageRect.height * 100))
+}
+
+function endCapDrag() {
+  capDragging.value = false; capDragDs = null
+  window.removeEventListener('mousemove', onCapDragMove)
+  window.removeEventListener('mouseup',   endCapDrag)
+  emit('update:captionStyle', { ...props.captionStyle, capX: capX.value, capY: capY.value, capW: capW.value })
+}
+
+let capResizeDs = null
+
+function startCapResize(e) {
+  const stageRect = stageRef.value.getBoundingClientRect()
+  capResizeDs = { stageRect, sx: e.clientX, ow: capW.value }
+  capResizing.value = true
+  window.addEventListener('mousemove', onCapResizeMove)
+  window.addEventListener('mouseup',   endCapResize)
+}
+
+function onCapResizeMove(e) {
+  if (!capResizeDs) return
+  const { stageRect, sx, ow } = capResizeDs
+  // Expand symmetrically from center → drag right = wider
+  const dw = (e.clientX - sx) / stageRect.width * 100 * 2
+  capW.value = Math.max(15, Math.min(98, ow + dw))
+}
+
+function endCapResize() {
+  capResizing.value = false; capResizeDs = null
+  window.removeEventListener('mousemove', onCapResizeMove)
+  window.removeEventListener('mouseup',   endCapResize)
+  emit('update:captionStyle', { ...props.captionStyle, capX: capX.value, capY: capY.value, capW: capW.value })
+}
 
 // ── Accent-color helpers ──────────────────────────────────────────────────────
 function parseOc(hex) {
@@ -561,18 +672,21 @@ watch(() => props.videoSrc, () => {
 
 function handleTimeUpdate() {
   if (!videoRef.value) return
+  videoCurrentTimeSec.value = videoRef.value.currentTime
   emit('timeupdate', { currentTime: videoRef.value.currentTime, duration: videoRef.value.duration || 0 })
 }
 async function handleLoadedMetadata() {
   if (!videoRef.value) return
   videoNativeW.value = videoRef.value.videoWidth
   videoNativeH.value = videoRef.value.videoHeight
-  emit('loadedmetadata', { duration: videoRef.value.duration || 0 })
+  emit('loadedmetadata', { duration: videoRef.value.duration || 0, videoWidth: videoRef.value.videoWidth, videoHeight: videoRef.value.videoHeight })
 
   // Initialise WebGL — wait for v-if canvas to appear in DOM
   await nextTick()
   if (glCanvasRef.value && !glReady.value) {
-    const ok = shader.setup(glCanvasRef.value, videoRef.value)
+    const ok = shader.setup(glCanvasRef.value, videoRef.value, {
+      onContextLost: () => { glReady.value = false },
+    })
     if (ok) {
       glReady.value = true
       shader.setFilter(SHADER_PARAMS[props.filterId] ?? SHADER_PARAMS.none)
@@ -679,6 +793,26 @@ const tempC = computed(() => {
 
 // ── GoPro / Minimal extra computed values ────────────────────────────────────
 const currentElevM = computed(() => Math.round(current.value?.ele ?? 0))
+
+function _fmtDateTime(d) {
+  const time = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+  const date = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+  return { time, date }
+}
+
+const goproDateTime = computed(() => {
+  // Smooth interpolation: anchor to the GPS time at trimStart, then add video elapsed ms.
+  // This makes the clock tick every second even when GPS points are 30 s apart.
+  const p0 = props.points[props.trimStart]
+  if (p0?.time && props.totalTime > 0) {
+    return _fmtDateTime(new Date(p0.time.getTime() + Math.round(props.progress * props.totalTime)))
+  }
+  // Fallback: snap to current GPS point (low-res GPS, no video, or no timestamps)
+  const t = current.value?.time
+  if (!t) return null
+  const d = t instanceof Date ? t : new Date(t)
+  return isNaN(d) ? null : _fmtDateTime(d)
+})
 
 const slopeDisplay = computed(() => {
   const g = current.value?.grade ?? 0
@@ -1091,6 +1225,8 @@ onUnmounted(() => {
   shader.destroy()
   document.removeEventListener('fullscreenchange', onFullscreenChange)
   document.removeEventListener('keydown', onKeyDown)
+  window.removeEventListener('mousemove', onCapDragMove);   window.removeEventListener('mouseup', endCapDrag)
+  window.removeEventListener('mousemove', onCapResizeMove); window.removeEventListener('mouseup', endCapResize)
 })
 
 // Watch elevation chart ref (appears/disappears with v-if)
@@ -1111,32 +1247,14 @@ watch(elevChartRef, (canvas) => {
 })
 
 watch(() => props.points,       () => { setupProjection(); draw(); drawElevChart() })
-watch(() => props.animIdx,      () => { draw(); drawElevChart() })
+watch(() => props.animIdx,      () => { draw(); drawElevChart() }, { flush: 'sync' })
 watch(() => props.videoSrc,     () => { setupProjection(); draw() })
 watch(() => props.overlayColor, () => { drawElevChart() })
 
 // ── Location pill position: empty space per layout ────────────────────────────
-const locationStyle = computed(() => {
-  switch (props.overlayFormat) {
-    case 'classic':
-      // Center gap between the left/right stat panels, just above the 30% bottom row
-      return { bottom: '31%', left: '24%', top: 'auto', right: 'auto' }
-    case 'minimal':
-      // Upper-left is free — only the progress bar is at top
-      return { top: '10px', left: '8px', bottom: 'auto', right: 'auto' }
-    case 'gopro':
-      // Bottom-right — speed gauge is bottom-center, left panel is left side
-      return { bottom: '8%', right: '2%', top: 'auto', left: 'auto' }
-    case 'sport':
-      // Bottom-right — circular gauge is bottom-left
-      return { bottom: '8%', right: '2%', top: 'auto', left: 'auto' }
-    case 'cycling':
-      // Bottom-right — GPS coords are bottom-left
-      return { bottom: '4%', right: '2%', top: 'auto', left: 'auto' }
-    default:
-      return { bottom: '8px', left: '8px', top: 'auto', right: 'auto' }
-  }
-})
+const locationParts = computed(() => props.locationName.split(',').map(p => p.trim()).filter(Boolean))
+
+const locationStyle = computed(() => ({ bottom: '8px', left: '8px', top: 'auto', right: 'auto' }))
 </script>
 
 <style scoped>
@@ -1441,7 +1559,7 @@ canvas.inset {
 
 /* ── GoPro HUD ───────────────────────────────────────────────────────────────── */
 .gopro-coords {
-  position: absolute; top: 10px; left: 50%;
+  position: absolute; top: clamp(6px, 0.9cqw, 14px); left: 50%;
   transform: translateX(-50%);
   font-size: clamp(7px, 0.85cqw, 10px);
   font-weight: 500; color: rgba(255,255,255,.55);
@@ -1450,7 +1568,7 @@ canvas.inset {
   white-space: nowrap; letter-spacing: .04em;
 }
 .gopro-bearing {
-  position: absolute; top: 22px; left: 50%;
+  position: absolute; top: clamp(14px, 2cqw, 30px); left: 50%;
   transform: translateX(-50%);
   display: flex; align-items: center; gap: clamp(4px, 0.7cqw, 9px);
 }
@@ -1467,7 +1585,7 @@ canvas.inset {
   display: flex; flex-direction: column;
   gap: clamp(10px, 1.5cqw, 22px);
 }
-.gopro-stat-block { display: flex; flex-direction: column; gap: 2px; }
+.gopro-stat-block { display: flex; flex-direction: column; gap: clamp(1px, 0.25cqw, 4px); }
 .gopro-stat-head  { display: flex; align-items: center; gap: clamp(4px, 0.6cqw, 8px); }
 .gopro-icon { width: clamp(12px, 1.5cqw, 18px); height: clamp(11px, 1.4cqw, 16px); flex-shrink: 0; }
 .gopro-stat-lbl {
@@ -1484,6 +1602,23 @@ canvas.inset {
   padding-left: clamp(16px, 2.1cqw, 26px);
 }
 .gopro-stat-unit { font-size: .65em; color: rgba(255,255,255,.65); font-weight: 600; }
+.gopro-datetime-block {
+  margin-top: clamp(6px, 0.8cqw, 12px);
+  padding-left: clamp(16px, 2.1cqw, 26px);
+  display: flex; flex-direction: column; gap: clamp(1px, 0.2cqw, 3px);
+}
+.gopro-datetime-time {
+  font-size: clamp(11px, 1.4cqw, 18px);
+  font-weight: 700; color: #fff;
+  text-shadow: 0 1px 4px rgba(0,0,0,.9);
+  letter-spacing: 0.03em;
+}
+.gopro-datetime-date {
+  font-size: clamp(7px, 0.85cqw, 11px);
+  font-weight: 700; color: rgba(255,255,255,.65);
+  letter-spacing: 0.06em; text-transform: uppercase;
+  text-shadow: 0 1px 4px rgba(0,0,0,.9);
+}
 .gopro-gauge-wrap {
   position: absolute; bottom: 0; left: 50%;
   transform: translateX(-50%);
@@ -1624,11 +1759,11 @@ canvas.inset {
 .hud-location {
   position: absolute;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: clamp(3px, 0.4cqw, 5px);
   background: rgba(0,0,0,0.55);
   border: 0.5px solid rgba(255,255,255,0.18);
-  border-radius: 20px;
+  border-radius: 4px;
   padding: clamp(2px, 0.35cqw, 4px) clamp(5px, 0.8cqw, 10px) clamp(2px, 0.35cqw, 4px) clamp(4px, 0.6cqw, 7px);
   backdrop-filter: blur(6px);
   pointer-events: none;
@@ -1641,16 +1776,21 @@ canvas.inset {
   flex-shrink: 0;
   color: var(--oc);
   opacity: 0.85;
+  margin-top: 0.1em;
 }
-.hud-location span {
+.hud-location-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.hud-location-lines span {
   font-size: clamp(7px, 0.85cqw, 11px);
   font-weight: 600;
   color: rgba(255,255,255,0.8);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   text-shadow: 0 1px 4px rgba(0,0,0,0.9);
   letter-spacing: 0.02em;
+  line-height: 1.3;
 }
 
 /* ── Simple HUD (map-only) ──────────────────────────────────────────────────── */
@@ -1680,4 +1820,64 @@ canvas.inset {
 .hud-track    { flex: 1; height: 3px; background: rgba(255,255,255,.15); border-radius: 2px; position: relative; }
 .hud-fill     { position: absolute; inset: 0 auto 0 0; background: rgba(255,255,255,.85); border-radius: 2px; transition: width .05s linear; }
 .hud-dot      { position: absolute; top: 50%; width: 8px; height: 8px; background: #fff; border-radius: 50%; transform: translate(-50%,-50%); box-shadow: 0 0 6px rgba(0,0,0,.5); transition: left .05s linear; }
+
+/* ── Captions ──────────────────────────────────────────────────────────────── */
+.caption-overlay {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+  color: #fff;
+  font-weight: 600;
+  line-height: 1.3;
+  z-index: 30;
+  cursor: grab;
+  user-select: none;
+  text-shadow: 0 1px 4px rgba(0,0,0,.8);
+  border-radius: 6px;
+  padding: 4px 12px;
+  font-size: clamp(12px, 2.5cqw, 22px);
+  box-sizing: border-box;
+  outline: 1.5px solid transparent;
+  transition: outline-color .15s;
+}
+.caption-overlay:hover {
+  outline-color: rgba(255,255,255,.35);
+}
+.caption--active {
+  outline-color: rgba(255,255,255,.7) !important;
+  cursor: grabbing;
+}
+.caption--bottom { bottom: 8%; }
+.caption--top    { top: 8%; }
+.caption--small  { font-size: clamp(10px, 1.8cqw, 16px); }
+.caption--large  { font-size: clamp(14px, 3.2cqw, 28px); }
+.caption--bg     { background: rgba(0,0,0,0.55); }
+
+/* Right-edge resize grip */
+.cap-resize-handle {
+  position: absolute;
+  right: -4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 10px;
+  height: 28px;
+  cursor: ew-resize;
+  border-radius: 3px;
+  background: rgba(255,255,255,0);
+  transition: background .15s;
+  display: flex; align-items: center; justify-content: center;
+}
+.caption-overlay:hover .cap-resize-handle,
+.caption--active .cap-resize-handle {
+  background: rgba(255,255,255,.25);
+}
+.cap-resize-handle::after {
+  content: '';
+  width: 2px;
+  height: 16px;
+  border-radius: 2px;
+  background: rgba(255,255,255,.7);
+  box-shadow: 4px 0 0 rgba(255,255,255,.4);
+}
 </style>

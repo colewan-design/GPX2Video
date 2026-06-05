@@ -96,7 +96,7 @@ const {
 // ── Import handler ────────────────────────────────────────────────────────────
 async function onImport(activity) {
   const gpx = await importActivity(activity)
-  if (gpx) emit('gpx', gpx, activity.name)
+  if (gpx) emit('gpx', gpx, activity)
 }
 
 // ── Date formatter ────────────────────────────────────────────────────────────

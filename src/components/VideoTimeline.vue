@@ -17,8 +17,25 @@
     <div class="vtl-scroll" ref="scrollRef" @scroll.passive="onScroll">
       <div class="vtl-content" :style="{ width: totalWidthPx + 'px' }">
 
+        <!-- Caption track (above video lane) -->
+        <div v-if="captions.length" class="vtl-caption-lane">
+          <div
+            v-for="cap in captions"
+            :key="cap.id"
+            class="vtl-caption-block"
+            :style="{
+              left:  Math.max(0, (cap.start - timelineShift) * pps) + 'px',
+              width: Math.max(4, (cap.end - cap.start) * pps) + 'px'
+            }"
+            :title="cap.text"
+            @mousedown.stop.prevent="emit('seek', cap.start)"
+          >
+            <span class="vtl-caption-text">{{ cap.text }}</span>
+          </div>
+        </div>
+
         <!-- Lane (click empty area to seek) -->
-        <div class="vtl-lane" @mousedown.self="onLaneDown">
+        <div class="vtl-lane" :class="{ 'vtl-lane--shifted': captions.length }" @mousedown.self="onLaneDown">
 
           <!-- Gap zones: double-click to merge adjacent clips -->
           <template v-for="(clip, i) in displayClips" :key="'gap-' + i">
@@ -83,12 +100,14 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 const props = defineProps({
   clips:          { type: Array,  default: () => [] },
   segments:       { type: Array,  default: () => [] },
+  captions:       { type: Array,  default: () => [] },
   videoDuration:  { type: Number, default: 0 },
   timelineShift:  { type: Number, default: 0 },
   videoProgress:  { type: Number, default: 0 },   // 0-1 absolute
   videoTrimStart: { type: Number, default: 0 },
   videoTrimEnd:   { type: Number, default: 0 },
   activeClipIdx:  { type: Number, default: 0 },
+  videoStartTime: { type: Date,   default: null },
 })
 const emit = defineEmits(['seek', 'move-clip', 'select-clip', 'reorder-clips', 'trim-clip', 'merge-clips'])
 
@@ -126,6 +145,15 @@ function fmtSec(s) {
   const sc = s % 60
   if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(sc).padStart(2,'0')}`
   return `${String(m).padStart(2,'0')}:${String(sc).padStart(2,'0')}`
+}
+
+function fmtClockTime(date, ivSec) {
+  const h = date.getHours(), m = date.getMinutes(), s = date.getSeconds()
+  const ampm = h >= 12 ? 'PM' : 'AM'
+  const h12  = h % 12 || 12
+  if (ivSec >= 3600) return `${h12} ${ampm}`
+  if (ivSec >= 60)   return `${h12}:${String(m).padStart(2,'0')} ${ampm}`
+  return `${h12}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
 }
 
 function segLabel(i) {
@@ -167,9 +195,10 @@ function drawRuler() {
   const ctx = cv.getContext('2d')
   const W = cv.width, H = cv.height
   const p = pps.value, sl = scrollL.value, sh = props.timelineShift
+  const vst = props.videoStartTime   // Date | null
 
   ctx.clearRect(0, 0, W, H)
-  ctx.fillStyle = '#111827'
+  ctx.fillStyle = '#1f1f1f'
   ctx.fillRect(0, 0, W, H)
 
   const tS = sl / p + sh
@@ -199,11 +228,27 @@ function drawRuler() {
     ctx.strokeStyle = 'rgba(255,255,255,.38)'
     ctx.beginPath(); ctx.moveTo(x + 0.5, H - 12); ctx.lineTo(x + 0.5, H); ctx.stroke()
     if (t >= 0) {
-      ctx.fillStyle  = 'rgba(255,255,255,.55)'
-      ctx.font       = '9px -apple-system,sans-serif'
-      ctx.textAlign  = 'left'
-      ctx.fillText(fmtSec(t), x + 3, H - 13)
+      const label = vst
+        ? fmtClockTime(new Date(vst.getTime() + t * 1000), iv)
+        : fmtSec(t)
+      ctx.fillStyle = 'rgba(255,255,255,.55)'
+      ctx.font      = '9px -apple-system,sans-serif'
+      ctx.textAlign = 'left'
+      ctx.fillText(label, x + 3, H - 13)
     }
+  }
+
+  // Date badge (top-left, fixed) when real timestamps are available
+  if (vst) {
+    // Show date of the currently visible range start
+    const visibleDate = new Date(vst.getTime() + tS * 1000)
+    const dateStr = visibleDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    ctx.font      = '8px -apple-system,sans-serif'
+    ctx.fillStyle = 'rgba(255,255,255,.32)'
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'top'
+    ctx.fillText(dateStr, 4, 3)
+    ctx.textBaseline = 'alphabetic'
   }
 
   // Playhead line on ruler
@@ -224,7 +269,7 @@ function resizeRuler() {
   const rw = rulerWrapRef.value
   if (!cv || !rw) return
   cv.width  = rw.clientWidth
-  cv.height = 26
+  cv.height = 34
   drawRuler()
 }
 
@@ -537,7 +582,7 @@ onUnmounted(() => {
 })
 
 // ── Watchers ──────────────────────────────────────────────────────────────────
-watch([scrollL, pps, phAbsPx, () => props.timelineShift], drawRuler)
+watch([scrollL, pps, phAbsPx, () => props.timelineShift, () => props.videoStartTime?.getTime() ?? null], drawRuler)
 watch(() => props.clips, fillAllThumbs, { deep: true })
 watch(pps, fillAllThumbs)
 </script>
@@ -545,10 +590,10 @@ watch(pps, fillAllThumbs)
 <style scoped>
 .vtl {
   position: relative;
-  background: #0c0c16;
-  border-radius: var(--radius-sm);
+  background: var(--bg2);
+  border-radius: var(--radius-md);
   overflow: hidden;
-  border: 0.5px solid var(--border);
+  border: 1px solid var(--border);
   user-select: none;
   margin-bottom: .5rem;
 }
@@ -556,23 +601,24 @@ watch(pps, fillAllThumbs)
 /* ── Ruler ──────────────────────────────────────────────────────────────────── */
 .vtl-ruler-wrap {
   position: relative;
-  height: 26px;
-  background: #111827;
+  height: 32px;
+  background: var(--bg3);
   flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
 }
 .vtl-ruler-cv {
   display: block;
   width: 100%;
-  height: 26px;
+  height: 32px;
   cursor: crosshair;
 }
 
-/* Playhead cap (CapCut style: rounded rect handle + line through ruler) */
+/* Playhead cap */
 .vtl-ph-head {
   position: absolute;
   top: 0;
   width: 14px;
-  height: 26px;
+  height: 32px;
   transform: translateX(-50%);
   cursor: ew-resize;
   z-index: 20;
@@ -581,18 +627,18 @@ watch(pps, fillAllThumbs)
 .vtl-ph-head::before {
   content: '';
   position: absolute;
-  top: 2px; left: 50%;
+  top: 3px; left: 50%;
   transform: translateX(-50%);
-  width: 14px; height: 14px;
+  width: 12px; height: 12px;
   background: #fff;
   border-radius: 3px;
 }
 .vtl-ph-head::after {
   content: '';
   position: absolute;
-  top: 14px; left: 50%;
+  top: 13px; left: 50%;
   transform: translateX(-50%);
-  width: 2px; height: 12px;
+  width: 2px; height: 19px;
   background: #fff;
 }
 
@@ -602,75 +648,111 @@ watch(pps, fillAllThumbs)
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: thin;
-  scrollbar-color: rgba(255,255,255,.15) transparent;
+  scrollbar-color: var(--border2) transparent;
 }
-.vtl-scroll::-webkit-scrollbar        { height: 5px; }
+.vtl-scroll::-webkit-scrollbar        { height: 4px; }
 .vtl-scroll::-webkit-scrollbar-track  { background: transparent; }
-.vtl-scroll::-webkit-scrollbar-thumb  { background: rgba(255,255,255,.15); border-radius: 3px; }
-.vtl-scroll::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.28); }
+.vtl-scroll::-webkit-scrollbar-thumb  { background: var(--border2); border-radius: 3px; }
+.vtl-scroll::-webkit-scrollbar-thumb:hover { background: var(--border3); }
 
 .vtl-content {
   position: relative;
-  min-height: 76px;
+  min-height: 72px;
+}
+.vtl-content:has(.vtl-caption-lane) { min-height: 96px; }
+
+/* ── Caption track ──────────────────────────────────────────────────────────── */
+.vtl-caption-lane {
+  position: absolute;
+  top: 3px;
+  left: 0; right: 0;
+  height: 22px;
+}
+.vtl-caption-block {
+  position: absolute;
+  top: 0; height: 100%;
+  background: rgba(20, 184, 166, 0.28);
+  border: 1px solid rgba(20, 184, 166, 0.7);
+  border-radius: 4px;
+  cursor: pointer;
+  overflow: hidden;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  padding: 0 5px;
+  transition: background .12s;
+}
+.vtl-caption-block:hover {
+  background: rgba(20, 184, 166, 0.45);
+  border-color: rgba(20, 184, 166, 1);
+}
+.vtl-caption-text {
+  font-size: 9px;
+  font-weight: 500;
+  color: rgb(153, 246, 228);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
 }
 
 /* ── Lane ──────────────────────────────────────────────────────────────────── */
 .vtl-lane {
   position: absolute;
   inset: 4px 0;
-  /* Subtle lane background */
+}
+.vtl-lane--shifted {
+  top: 28px;
 }
 
 /* ── Clip block ─────────────────────────────────────────────────────────────── */
 .vtl-clip {
   position: absolute;
   top: 0; bottom: 0;
-  border: 1.5px solid rgba(0,210,215,.55);
-  border-radius: 3px;
-  background: rgba(0,165,180,.1);
+  border: 1.5px solid var(--track-video);
+  border-radius: 4px;
+  background: var(--track-video-bg);
   overflow: hidden;
   cursor: grab;
   box-sizing: border-box;
-  transition: border-color .12s, background .12s;
+  transition: border-color .12s, box-shadow .12s;
 }
 .vtl-clip:hover {
-  border-color: rgba(0,230,235,.85);
-  background: rgba(0,190,200,.18);
+  box-shadow: 0 0 0 1px var(--track-video);
 }
 .vtl-clip--active {
-  border-color: var(--accent);
-  background: rgba(0,200,210,.2);
+  border-color: var(--track-video);
+  box-shadow: 0 0 0 1px var(--track-video);
 }
 .vtl-clip--dragging {
   cursor: grabbing;
-  border-color: #fff;
-  background: rgba(255,255,255,.14);
+  border-color: rgba(255,255,255,.6);
+  background: rgba(255,255,255,.08);
   z-index: 8;
-  box-shadow: 0 3px 18px rgba(0,0,0,.55);
+  box-shadow: 0 4px 20px rgba(0,0,0,.5);
 }
 
 .vtl-clip-top {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 2px 5px;
-  background: rgba(0,180,195,.4);
+  padding: 2px 6px;
+  background: rgba(14,165,233,.35);
   gap: 4px;
   white-space: nowrap;
   overflow: hidden;
   flex-shrink: 0;
 }
 .vtl-clip-name {
-  font-size: 9px;
-  font-weight: 700;
-  color: rgba(255,255,255,.88);
+  font-size: 10px;
+  font-weight: 500;
+  color: rgba(255,255,255,.9);
   overflow: hidden;
   text-overflow: ellipsis;
-  letter-spacing: .02em;
 }
 .vtl-clip-dur {
   font-size: 9px;
-  color: rgba(255,255,255,.5);
+  color: rgba(255,255,255,.45);
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
 }
@@ -686,8 +768,8 @@ watch(pps, fillAllThumbs)
   height: 100%;
   background-size: cover;
   background-position: center;
-  background-color: rgba(0,0,0,.4);
-  opacity: .75;
+  background-color: rgba(0,0,0,.35);
+  opacity: .7;
 }
 
 /* ── Per-clip trim handles ──────────────────────────────────────────────────── */
@@ -710,11 +792,11 @@ watch(pps, fillAllThumbs)
 .vtl-clip-trim::after {
   content: '';
   width: 3px;
-  height: 60%;
-  min-height: 16px;
-  background: rgba(255,255,255,.85);
+  height: 55%;
+  min-height: 14px;
+  background: rgba(255,255,255,.8);
   border-radius: 2px;
-  box-shadow: 0 0 4px rgba(0,0,0,.6);
+  box-shadow: 0 0 4px rgba(0,0,0,.5);
 }
 .vtl-clip-trim:hover::after { background: #fff; }
 
@@ -724,8 +806,8 @@ watch(pps, fillAllThumbs)
   top: 0; bottom: 0;
   background: repeating-linear-gradient(
     90deg,
-    rgba(255,255,255,.04) 0px,
-    rgba(255,255,255,.04) 1px,
+    rgba(255,255,255,.03) 0px,
+    rgba(255,255,255,.03) 1px,
     transparent 1px,
     transparent 8px
   );
@@ -733,14 +815,14 @@ watch(pps, fillAllThumbs)
   z-index: 1;
 }
 .vtl-gap:hover {
-  background: rgba(0,210,215,.08);
-  outline: 1px dashed rgba(0,210,215,.3);
+  background: rgba(14,165,233,.06);
+  outline: 1px dashed rgba(14,165,233,.25);
 }
 
 /* ── Playhead line ──────────────────────────────────────────────────────────── */
 .vtl-ph-line {
   position: absolute;
-  top: 26px; /* start at ruler bottom */
+  top: 32px;
   bottom: 0;
   width: 2px;
   background: #fff;
@@ -754,10 +836,10 @@ watch(pps, fillAllThumbs)
   position: absolute;
   bottom: 6px; right: 8px;
   font-size: 10px;
-  font-weight: 600;
-  color: rgba(255,255,255,.65);
-  background: rgba(0,0,0,.55);
-  padding: 2px 6px;
+  font-weight: 500;
+  color: rgba(255,255,255,.5);
+  background: rgba(0,0,0,.5);
+  padding: 2px 7px;
   border-radius: 4px;
   pointer-events: none;
   z-index: 20;

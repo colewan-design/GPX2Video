@@ -1,7 +1,7 @@
 <template>
   <div class="gpx-loader">
     <!-- Current file / loaded state -->
-    <div class="gpx-source" :class="{ loaded: !!fileName }">
+    <div class="gpx-source" :class="{ loaded }">
       <div class="gpx-icon">
         <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
           <path d="M3 10a7 7 0 1 0 14 0 7 7 0 0 0-14 0z"/>
@@ -9,18 +9,23 @@
         </svg>
       </div>
       <div class="gpx-info">
-        <span class="gpx-label">{{ fileName ?? 'No GPX loaded' }}</span>
-        <span class="gpx-sub">{{ fileName ? 'GPX track' : 'Drop file or browse' }}</span>
+        <span class="gpx-label">{{ fileName ?? (loaded ? 'Strava activity' : 'No GPX loaded') }}</span>
+        <span class="gpx-sub">{{ loaded ? 'GPX track' : 'Drop file or browse' }}</span>
       </div>
-      <div v-if="fileName" class="gpx-loaded-dot" />
+      <div v-if="loaded" class="gpx-loaded-dot" />
+      <button v-if="loaded" class="gpx-btn gpx-btn-remove" title="Remove GPX" @click="$emit('remove')">
+        <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+          <path d="M2 2l8 8M10 2l-8 8"/>
+        </svg>
+      </button>
       <button class="gpx-btn" @click="fileInput.click()">
-        {{ fileName ? 'Change' : 'Browse' }}
+        {{ loaded ? 'Change' : 'Browse' }}
       </button>
     </div>
 
     <!-- Drop overlay -->
     <div
-      v-if="!fileName"
+      v-if="!loaded"
       class="gpx-drop"
       :class="{ dragging }"
       @dragover.prevent="dragging = true"
@@ -56,9 +61,10 @@ import { ref } from 'vue'
 
 defineProps({
   fileName:   { type: String,  default: null },
+  loaded:     { type: Boolean, default: false },
   stravaOpen: { type: Boolean, default: false },
 })
-const emit = defineEmits(['file', 'toggle-strava'])
+const emit = defineEmits(['file', 'remove', 'toggle-strava'])
 const fileInput = ref(null)
 const dragging  = ref(false)
 
@@ -131,6 +137,12 @@ function onPick(e) {
   transition: border-color .15s, color .15s;
 }
 .gpx-btn:hover { border-color: var(--accent-semi); color: var(--accent); }
+.gpx-btn-remove {
+  padding: .28rem .4rem;
+  color: var(--text3);
+}
+.gpx-btn-remove svg { width: 10px; height: 10px; display: block; }
+.gpx-btn-remove:hover { border-color: rgba(255,80,80,.4); color: #ff5050; }
 
 /* Drop zone (shown when no file) */
 .gpx-drop {

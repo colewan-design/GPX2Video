@@ -7,208 +7,228 @@
       Sticker
     </button>
 
+    <!-- ── Full-page sticker editor ──────────────────────────────────────────── -->
     <Teleport to="body">
-      <div v-if="open && !isMobile" class="sticker-backdrop" @click.self="toggle" />
-    </Teleport>
+      <div v-if="open" ref="dialogRef" class="fp-shell">
 
-    <Teleport to="body">
-      <div v-if="open && !isMobile" class="sticker-dialog" ref="dialogRef">
-
-        <!-- Dialog header -->
-        <div class="dialog-header">
-          <span class="dialog-title">
-            <svg viewBox="0 0 20 20" fill="currentColor" width="16" height="16">
+        <!-- Header -->
+        <div class="fp-header">
+          <span class="fp-title">
+            <svg viewBox="0 0 20 20" fill="currentColor" width="15" height="15">
               <path d="M10 1.5l2 6.2H18l-5.2 3.8 2 6.2L10 14l-4.8 3.7 2-6.2L2 7.7h6z"/>
             </svg>
             Sticker
           </span>
-          <button class="dialog-close" @click="toggle" title="Close">
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <line x1="3" y1="3" x2="13" y2="13"/><line x1="13" y1="3" x2="3" y2="13"/>
-            </svg>
-          </button>
+          <div class="fp-header-actions">
+            <button class="fp-dl-btn" @click="download">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              {{ bgImageSrc ? 'Download photo' : 'Download PNG' }}
+            </button>
+            <button class="fp-close" @click="toggle" title="Close">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <line x1="3" y1="3" x2="13" y2="13"/><line x1="13" y1="3" x2="3" y2="13"/>
+              </svg>
+            </button>
+          </div>
         </div>
 
-        <div class="dialog-body">
-          <!-- Left column: controls -->
-          <div class="dialog-controls">
+        <!-- file input always-mounted -->
+        <input ref="bgInputRef" type="file" accept="image/*" style="display:none" @change="onBgPick" />
 
-            <!-- Orientation -->
-            <div class="ctrl-section">
-              <span class="ctrl-section-label">Orientation</span>
-              <div class="sticker-orient">
-                <button
-                  v-for="o in ORIENT_OPTIONS" :key="o.key"
-                  :class="['orient-btn', { 'orient-btn--on': orientation === o.key }]"
-                  :title="o.label"
-                  @click="setOrientation(o.key)"
-                >
-                  <svg viewBox="0 0 16 16" fill="currentColor">
-                    <rect :x="o.rx" :y="o.ry" :width="o.rw" :height="o.rh" rx="1.5"/>
-                  </svg>
-                  {{ o.label }}
-                </button>
-              </div>
-            </div>
+        <!-- Body: sidebar + canvas -->
+        <div class="fp-body">
 
-            <!-- Format -->
-            <div class="ctrl-section">
-              <span class="ctrl-section-label">Format</span>
-              <div class="sticker-formats">
-                <button
-                  v-for="f in FORMAT_OPTIONS" :key="f.key"
-                  :class="['format-btn', { 'format-btn--on': stickerFormat === f.key }]"
-                  @click="setFormat(f.key)"
-                >{{ f.label }}</button>
-              </div>
-            </div>
+          <!-- ── Desktop sidebar (hidden on mobile) ─────────────────────────── -->
+          <aside class="fp-sidebar">
 
-            <!-- Photo upload -->
-            <div class="ctrl-section">
-              <span class="ctrl-section-label">Photo</span>
-              <div
-                class="embed-upload"
-                :class="{ 'embed-upload--dragging': bgDragging, 'embed-upload--loaded': !!bgImageSrc }"
-                @click="bgInputRef.click()"
-                @dragover.prevent="bgDragging = true"
-                @dragleave="bgDragging = false"
-                @drop.prevent="onBgDrop"
-              >
-                <template v-if="!bgImageSrc">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                    <rect x="3" y="3" width="18" height="18" rx="2"/>
-                    <path d="M3 15l5-5 4 4 3-3 6 6"/>
-                    <circle cx="8.5" cy="8.5" r="1.5" fill="currentColor" stroke="none"/>
-                  </svg>
-                  <span class="embed-upload-label">Drop a photo or <span class="embed-link">click to browse</span></span>
-                  <span class="embed-upload-hint">Embed sticker into a photo — optional</span>
-                </template>
-                <template v-else>
-                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-                    <rect x="1" y="1" width="14" height="14" rx="2"/>
-                    <path d="M1 10l4-3 3 2.5 3-4 5 4.5"/>
-                  </svg>
-                  <span class="embed-upload-label">{{ bgFileName }}&ensp;<span class="embed-link">change</span></span>
-                </template>
-                <input ref="bgInputRef" type="file" accept="image/*" style="display:none" @change="onBgPick" />
-              </div>
-            </div>
-
-            <!-- Embed style toggle — only when photo loaded -->
-            <div v-if="bgImageSrc" class="ctrl-section">
-              <span class="ctrl-section-label">Style</span>
-              <div class="embed-style-tabs embed-style-tabs--3">
-                <button :class="['embed-style-tab', { 'embed-style-tab--on': embedStyle === 'sticker' }]" @click="setEmbedStyle('sticker')">
-                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-                    <rect x="2" y="2" width="7" height="9" rx="1.5"/>
-                    <rect x="7" y="5" width="7" height="9" rx="1.5" opacity=".5"/>
-                  </svg>
-                  Sticker
-                </button>
-                <button :class="['embed-style-tab', { 'embed-style-tab--on': embedStyle === 'integrated' }]" @click="setEmbedStyle('integrated')">
-                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-                    <rect x="1" y="1" width="14" height="14" rx="2"/>
-                    <path d="M1 10l4-3 3 2.5 3-4 5 4.5" opacity=".5"/>
-                    <rect x="1" y="10" width="14" height="5" rx="0" fill="currentColor" opacity=".25" stroke="none"/>
-                    <line x1="4" y1="12" x2="4" y2="14.5" stroke-width="1.8"/>
-                    <line x1="8" y1="12" x2="8" y2="14.5" stroke-width="1.8"/>
-                    <line x1="12" y1="12" x2="12" y2="14.5" stroke-width="1.8"/>
-                  </svg>
-                  Overlay
-                </button>
-                <button :class="['embed-style-tab', { 'embed-style-tab--on': embedStyle === 'backdrop' }]" @click="setEmbedStyle('backdrop')">
-                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-                    <rect x="1" y="1" width="14" height="14" rx="2"/>
-                    <circle cx="4.5" cy="5" r="1.4" fill="currentColor" stroke="none" opacity=".4"/>
-                    <path d="M1 9.5l4-3.5 3.5 3 3-4 3.5 3" opacity=".4"/>
-                    <line x1="3.5" y1="11.5" x2="3.5" y2="14.5" stroke-width="1.8"/>
-                    <line x1="8" y1="11.5" x2="8" y2="14.5" stroke-width="1.8"/>
-                    <line x1="12.5" y1="11.5" x2="12.5" y2="14.5" stroke-width="1.8"/>
-                  </svg>
-                  Full
-                </button>
-              </div>
-            </div>
-
-            <!-- Sticker controls -->
-            <div v-if="bgImageSrc && embedStyle === 'sticker'" class="ctrl-section embed-controls">
-              <div class="embed-row">
-                <span class="embed-ctrl-label">Size&nbsp;<span class="embed-ctrl-val">{{ Math.round(stickerScale * 100) }}%</span></span>
-                <input
-                  class="embed-slider"
-                  type="range" min="15" max="70" step="1"
-                  :value="Math.round(stickerScale * 100)"
-                  @input="stickerScale = Number($event.target.value) / 100; nextTick(draw)"
-                />
-              </div>
-              <div class="embed-row">
-                <span class="embed-ctrl-label">Snap</span>
-                <div class="pos-grid">
-                  <button
-                    v-for="p in POSITIONS" :key="p"
-                    :class="['pos-btn', { 'pos-btn--on': !dragPos && stickerPos === p }]"
-                    :title="p.replace(/-/g,' ')"
-                    @click="snapTo(p)"
-                  />
-                </div>
-              </div>
-              <span class="embed-drag-hint">or drag the sticker on the preview</span>
-            </div>
-
-            <!-- Integrated controls -->
-            <div v-if="bgImageSrc && embedStyle === 'integrated'" class="ctrl-section embed-controls">
-              <div class="embed-row">
-                <span class="embed-ctrl-label">Layout</span>
-                <div class="integrated-pos-tabs integrated-pos-tabs--wrap">
-                  <button
-                    v-for="il in INTEGRATED_LAYOUTS" :key="il.key"
-                    :class="['int-pos-btn', { 'int-pos-btn--on': integratedLayout === il.key }]"
-                    @click="integratedLayout = il.key; nextTick(draw)"
-                  >{{ il.label }}</button>
-                </div>
-              </div>
-              <div class="embed-row">
-                <span class="embed-ctrl-label">Position</span>
-                <div class="integrated-pos-tabs">
-                  <button
-                    v-for="ip in INTEGRATED_POSITIONS" :key="ip.key"
-                    :class="['int-pos-btn', { 'int-pos-btn--on': integratedPos === ip.key }]"
-                    @click="integratedPos = ip.key; nextTick(draw)"
-                  >{{ ip.label }}</button>
-                </div>
-              </div>
-              <div class="embed-row">
-                <span class="embed-ctrl-label">Route</span>
-                <label class="toggle-label">
-                  <input type="checkbox" v-model="integratedRoute" @change="nextTick(draw)" />
-                  <span class="toggle-track"><span class="toggle-thumb"/></span>
-                  Show
-                </label>
-              </div>
-            </div>
-
-            <!-- Download -->
-            <div class="sticker-panel-actions">
-              <button class="sticker-dl-btn" @click="download">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                  <polyline points="7 10 12 15 17 10"/>
-                  <line x1="12" y1="15" x2="12" y2="3"/>
-                </svg>
-                {{ bgImageSrc ? 'Download photo' : 'Download sticker PNG' }}
+            <!-- Sub-tab bar -->
+            <div class="fp-tab-bar">
+              <button :class="['fp-tab', { 'fp-tab--on': sidebarTab === 'theme' }]" @click="sidebarTab = 'theme'">Theme</button>
+              <button :class="['fp-tab', { 'fp-tab--on': sidebarTab === 'photo' }]" @click="sidebarTab = 'photo'">
+                Photo
+                <span v-if="bgImageSrc" class="fp-tab-dot" />
               </button>
             </div>
 
-          </div>
+            <!-- ── Theme tab ── -->
+            <div v-if="sidebarTab === 'theme'" class="fp-tab-content">
 
-          <!-- Right column: canvas preview -->
-          <div class="dialog-preview">
-            <div class="sticker-preview-wrap" :style="bgImageSrc ? { background: '#111' } : {}">
+              <div v-if="!bgImageSrc" class="fp-section">
+                <span class="fp-section-lbl">Canvas</span>
+                <div class="sticker-orient">
+                  <button
+                    v-for="o in ORIENT_OPTIONS" :key="o.key"
+                    :class="['orient-btn', { 'orient-btn--on': orientation === o.key }]"
+                    :title="o.label"
+                    @click="setOrientation(o.key)"
+                  >
+                    <svg viewBox="0 0 16 16" fill="currentColor">
+                      <rect :x="o.rx" :y="o.ry" :width="o.rw" :height="o.rh" rx="1.5"/>
+                    </svg>
+                    {{ o.label }}
+                  </button>
+                </div>
+              </div>
+
+              <div class="fp-section">
+                <span class="fp-section-lbl">Theme</span>
+                <div class="sticker-formats">
+                  <button
+                    v-for="f in FORMAT_OPTIONS" :key="f.key"
+                    :class="['format-btn', { 'format-btn--on': stickerFormat === f.key }]"
+                    @click="setFormat(f.key)"
+                  >{{ f.label }}</button>
+                </div>
+              </div>
+
+            </div>
+
+            <!-- ── Photo tab ── -->
+            <div v-if="sidebarTab === 'photo'" class="fp-tab-content">
+
+              <div class="fp-section">
+                <span class="fp-section-lbl">Background photo</span>
+                <div
+                  class="embed-upload"
+                  :class="{ 'embed-upload--dragging': bgDragging, 'embed-upload--loaded': !!bgImageSrc }"
+                  @click="bgInputRef.click()"
+                  @dragover.prevent="bgDragging = true"
+                  @dragleave="bgDragging = false"
+                  @drop.prevent="onBgDrop"
+                >
+                  <template v-if="!bgImageSrc">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                      <rect x="3" y="3" width="18" height="18" rx="2"/>
+                      <path d="M3 15l5-5 4 4 3-3 6 6"/>
+                      <circle cx="8.5" cy="8.5" r="1.5" fill="currentColor" stroke="none"/>
+                    </svg>
+                    <span class="embed-upload-label">Drop a photo or <span class="embed-link">click to browse</span></span>
+                    <span class="embed-upload-hint">Embed sticker into a photo — optional</span>
+                  </template>
+                  <template v-else>
+                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                      <rect x="1" y="1" width="14" height="14" rx="2"/>
+                      <path d="M1 10l4-3 3 2.5 3-4 5 4.5"/>
+                    </svg>
+                    <span class="embed-upload-label embed-upload-filename">{{ bgFileName }}&ensp;<span class="embed-link">change</span></span>
+                    <button class="embed-clear-btn" @click.stop="clearBgImage" title="Remove photo">
+                      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <line x1="2" y1="2" x2="10" y2="10"/><line x1="10" y1="2" x2="2" y2="10"/>
+                      </svg>
+                    </button>
+                  </template>
+                </div>
+              </div>
+
+              <template v-if="bgImageSrc">
+                <div class="fp-divider" />
+
+                <div class="fp-section">
+                  <span class="fp-section-lbl">Embed style</span>
+                  <div class="embed-style-tabs embed-style-tabs--3">
+                    <button :class="['embed-style-tab', { 'embed-style-tab--on': embedStyle === 'sticker' }]" @click="setEmbedStyle('sticker')">
+                      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                        <rect x="2" y="2" width="7" height="9" rx="1.5"/>
+                        <rect x="7" y="5" width="7" height="9" rx="1.5" opacity=".5"/>
+                      </svg>
+                      Sticker
+                    </button>
+                    <button :class="['embed-style-tab', { 'embed-style-tab--on': embedStyle === 'integrated' }]" @click="setEmbedStyle('integrated')">
+                      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                        <rect x="1" y="1" width="14" height="14" rx="2"/>
+                        <path d="M1 10l4-3 3 2.5 3-4 5 4.5" opacity=".5"/>
+                        <rect x="1" y="10" width="14" height="5" rx="0" fill="currentColor" opacity=".25" stroke="none"/>
+                        <line x1="4" y1="12" x2="4" y2="14.5" stroke-width="1.8"/>
+                        <line x1="8" y1="12" x2="8" y2="14.5" stroke-width="1.8"/>
+                        <line x1="12" y1="12" x2="12" y2="14.5" stroke-width="1.8"/>
+                      </svg>
+                      Overlay
+                    </button>
+                    <button :class="['embed-style-tab', { 'embed-style-tab--on': embedStyle === 'backdrop' }]" @click="setEmbedStyle('backdrop')">
+                      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                        <rect x="1" y="1" width="14" height="14" rx="2"/>
+                        <circle cx="4.5" cy="5" r="1.4" fill="currentColor" stroke="none" opacity=".4"/>
+                        <path d="M1 9.5l4-3.5 3.5 3 3-4 3.5 3" opacity=".4"/>
+                        <line x1="3.5" y1="11.5" x2="3.5" y2="14.5" stroke-width="1.8"/>
+                        <line x1="8" y1="11.5" x2="8" y2="14.5" stroke-width="1.8"/>
+                        <line x1="12.5" y1="11.5" x2="12.5" y2="14.5" stroke-width="1.8"/>
+                      </svg>
+                      Full
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Sticker sub-controls -->
+                <template v-if="embedStyle === 'sticker'">
+                  <div class="fp-divider" />
+                  <div class="fp-section embed-controls">
+                    <div class="embed-row">
+                      <span class="embed-ctrl-label">Size&nbsp;<span class="embed-ctrl-val">{{ Math.round(stickerScale * 100) }}%</span></span>
+                      <input class="embed-slider" type="range" min="15" max="70" step="1"
+                        :value="Math.round(stickerScale * 100)"
+                        @input="stickerScale = Number($event.target.value) / 100; nextTick(draw)" />
+                    </div>
+                    <div class="embed-row">
+                      <span class="embed-ctrl-label">Snap</span>
+                      <div class="pos-grid">
+                        <button v-for="p in POSITIONS" :key="p"
+                          :class="['pos-btn', { 'pos-btn--on': !dragPos && stickerPos === p }]"
+                          :title="p.replace(/-/g,' ')" @click="snapTo(p)" />
+                      </div>
+                    </div>
+                    <span class="embed-drag-hint">or drag the sticker on the preview</span>
+                  </div>
+                </template>
+
+                <!-- Overlay sub-controls -->
+                <template v-if="embedStyle === 'integrated'">
+                  <div class="fp-divider" />
+                  <div class="fp-section embed-controls">
+                    <div class="embed-row">
+                      <span class="embed-ctrl-label">Layout</span>
+                      <div class="integrated-pos-tabs integrated-pos-tabs--wrap">
+                        <button v-for="il in INTEGRATED_LAYOUTS" :key="il.key"
+                          :class="['int-pos-btn', { 'int-pos-btn--on': integratedLayout === il.key }]"
+                          @click="integratedLayout = il.key; nextTick(draw)">{{ il.label }}</button>
+                      </div>
+                    </div>
+                    <div class="embed-row">
+                      <span class="embed-ctrl-label">Position</span>
+                      <div class="integrated-pos-tabs">
+                        <button v-for="ip in INTEGRATED_POSITIONS" :key="ip.key"
+                          :class="['int-pos-btn', { 'int-pos-btn--on': integratedPos === ip.key }]"
+                          @click="integratedPos = ip.key; nextTick(draw)">{{ ip.label }}</button>
+                      </div>
+                    </div>
+                    <div class="embed-row">
+                      <span class="embed-ctrl-label">Route</span>
+                      <label class="toggle-label">
+                        <input type="checkbox" v-model="integratedRoute" @change="nextTick(draw)" />
+                        <span class="toggle-track"><span class="toggle-thumb"/></span>
+                        Show route
+                      </label>
+                    </div>
+                  </div>
+                </template>
+
+              </template>
+
+            </div>
+
+          </aside>
+
+          <!-- ── Canvas preview ────────────────────────────────────────────── -->
+          <div class="fp-preview">
+            <div class="fp-canvas-wrap" :style="bgImageSrc ? { background: '#080808' } : {}">
               <canvas
                 ref="canvasRef"
                 :width="embedCw"
                 :height="embedCh"
-                class="sticker-canvas"
+                class="fp-canvas"
                 :style="[
                   { width: embedPreviewW + 'px', ...(embedPreviewH ? { height: embedPreviewH + 'px' } : {}) },
                   bgImageSrc && embedStyle === 'sticker' ? { cursor: isDragging ? 'grabbing' : 'grab', touchAction: 'none' } : {},
@@ -220,64 +240,20 @@
               />
             </div>
           </div>
+
         </div>
 
-      </div>
-    </Teleport>
-
-    <!-- ── Mobile: full-screen editor ─────────────────────────────────────── -->
-    <Teleport to="body">
-      <div v-if="open && isMobile" class="sm-shell">
-
-        <!-- Header -->
-        <div class="sm-header">
-          <span class="sm-title">
-            <svg viewBox="0 0 20 20" fill="currentColor" width="15" height="15">
-              <path d="M10 1.5l2 6.2H18l-5.2 3.8 2 6.2L10 14l-4.8 3.7 2-6.2L2 7.7h6z"/>
-            </svg>
-            Sticker
-          </span>
-          <button class="sm-close" @click="toggle">
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <line x1="3" y1="3" x2="13" y2="13"/><line x1="13" y1="3" x2="3" y2="13"/>
-            </svg>
-          </button>
-        </div>
-
-        <!-- Always-mounted file input (outside panels so ref stays live) -->
-        <input ref="bgInputRef" type="file" accept="image/*" style="display:none" @change="onBgPick" />
-
-        <!-- Preview -->
-        <div class="sm-preview">
-          <div class="sm-canvas-wrap" :style="bgImageSrc ? { background: '#0a0a0a' } : {}">
-            <canvas
-              ref="canvasRef"
-              :width="embedCw"
-              :height="embedCh"
-              class="sm-canvas"
-              :style="bgImageSrc && embedStyle === 'sticker' ? { cursor: isDragging ? 'grabbing' : 'grab', touchAction: 'none' } : {}"
-              @pointerdown="onCanvasPointerDown"
-              @pointermove="onCanvasPointerMove"
-              @pointerup="onCanvasPointerUp"
-              @pointerleave="onCanvasPointerUp"
-            />
-          </div>
-        </div>
-
-        <!-- Tool panel — slides up above nav when a tool is active -->
+        <!-- ── Mobile: slide-up tool panel ───────────────────────────────────── -->
         <Transition name="sm-slide">
           <div v-if="activeTool" class="sm-panel">
             <div class="sm-panel-handle" />
 
-            <!-- Canvas size / orientation -->
             <div v-if="activeTool === 'orient'" class="sm-panel-body">
               <p class="sm-panel-lbl">Canvas size</p>
               <div class="sm-chips">
-                <button
-                  v-for="o in ORIENT_OPTIONS" :key="o.key"
+                <button v-for="o in ORIENT_OPTIONS" :key="o.key"
                   :class="['sm-chip', { on: orientation === o.key }]"
-                  @click="setOrientation(o.key)"
-                >
+                  @click="setOrientation(o.key)">
                   <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
                     <rect :x="o.rx" :y="o.ry" :width="o.rw" :height="o.rh" rx="1.5"/>
                   </svg>
@@ -286,26 +262,20 @@
               </div>
             </div>
 
-            <!-- Format -->
             <div v-if="activeTool === 'format'" class="sm-panel-body">
               <p class="sm-panel-lbl">Style theme</p>
               <div class="sm-chips sm-chips--wrap">
-                <button
-                  v-for="f in FORMAT_OPTIONS" :key="f.key"
+                <button v-for="f in FORMAT_OPTIONS" :key="f.key"
                   :class="['sm-chip', { on: stickerFormat === f.key }]"
-                  @click="setFormat(f.key)"
-                >{{ f.label }}</button>
+                  @click="setFormat(f.key)">{{ f.label }}</button>
               </div>
             </div>
 
-            <!-- Photo -->
             <div v-if="activeTool === 'photo'" class="sm-panel-body">
               <p class="sm-panel-lbl">Background photo</p>
-              <div
-                class="embed-upload"
+              <div class="embed-upload"
                 :class="{ 'embed-upload--dragging': bgDragging, 'embed-upload--loaded': !!bgImageSrc }"
-                @click="bgInputRef.click()"
-              >
+                @click="bgInputRef.click()">
                 <template v-if="!bgImageSrc">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                     <rect x="3" y="3" width="18" height="18" rx="2"/>
@@ -320,12 +290,16 @@
                     <rect x="1" y="1" width="14" height="14" rx="2"/>
                     <path d="M1 10l4-3 3 2.5 3-4 5 4.5"/>
                   </svg>
-                  <span class="embed-upload-label">{{ bgFileName }}&ensp;<span class="embed-link">change</span></span>
+                  <span class="embed-upload-label embed-upload-filename">{{ bgFileName }}&ensp;<span class="embed-link">change</span></span>
+                  <button class="embed-clear-btn" @click.stop="clearBgImage" title="Remove photo">
+                    <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                      <line x1="2" y1="2" x2="10" y2="10"/><line x1="10" y1="2" x2="2" y2="10"/>
+                    </svg>
+                  </button>
                 </template>
               </div>
             </div>
 
-            <!-- Style + controls (photo must be loaded) -->
             <div v-if="activeTool === 'style' && bgImageSrc" class="sm-panel-body">
               <p class="sm-panel-lbl">Embed style</p>
               <div class="embed-style-tabs embed-style-tabs--3">
@@ -356,52 +330,38 @@
                   Full
                 </button>
               </div>
-
-              <!-- Sticker controls -->
               <template v-if="embedStyle === 'sticker'">
                 <div class="sm-ctrl-row">
                   <span class="sm-ctrl-lbl">Size <span class="sm-ctrl-val">{{ Math.round(stickerScale * 100) }}%</span></span>
-                  <input
-                    class="embed-slider"
-                    type="range" min="15" max="70" step="1"
+                  <input class="embed-slider" type="range" min="15" max="70" step="1"
                     :value="Math.round(stickerScale * 100)"
-                    @input="stickerScale = Number($event.target.value) / 100; nextTick(draw)"
-                  />
+                    @input="stickerScale = Number($event.target.value) / 100; nextTick(draw)" />
                 </div>
                 <div class="sm-ctrl-row sm-ctrl-row--top">
                   <span class="sm-ctrl-lbl">Snap</span>
                   <div class="pos-grid">
-                    <button
-                      v-for="p in POSITIONS" :key="p"
+                    <button v-for="p in POSITIONS" :key="p"
                       :class="['pos-btn', { 'pos-btn--on': !dragPos && stickerPos === p }]"
-                      :title="p.replace(/-/g,' ')"
-                      @click="snapTo(p)"
-                    />
+                      :title="p.replace(/-/g,' ')" @click="snapTo(p)" />
                   </div>
                 </div>
                 <p class="sm-drag-hint">or drag the sticker on the preview</p>
               </template>
-
-              <!-- Integrated controls -->
               <template v-if="embedStyle === 'integrated'">
                 <div class="sm-ctrl-row sm-ctrl-row--top">
                   <span class="sm-ctrl-lbl">Layout</span>
                   <div class="integrated-pos-tabs integrated-pos-tabs--wrap">
-                    <button
-                      v-for="il in INTEGRATED_LAYOUTS" :key="il.key"
+                    <button v-for="il in INTEGRATED_LAYOUTS" :key="il.key"
                       :class="['int-pos-btn', { 'int-pos-btn--on': integratedLayout === il.key }]"
-                      @click="integratedLayout = il.key; nextTick(draw)"
-                    >{{ il.label }}</button>
+                      @click="integratedLayout = il.key; nextTick(draw)">{{ il.label }}</button>
                   </div>
                 </div>
                 <div class="sm-ctrl-row">
                   <span class="sm-ctrl-lbl">Position</span>
                   <div class="integrated-pos-tabs">
-                    <button
-                      v-for="ip in INTEGRATED_POSITIONS" :key="ip.key"
+                    <button v-for="ip in INTEGRATED_POSITIONS" :key="ip.key"
                       :class="['int-pos-btn', { 'int-pos-btn--on': integratedPos === ip.key }]"
-                      @click="integratedPos = ip.key; nextTick(draw)"
-                    >{{ ip.label }}</button>
+                      @click="integratedPos = ip.key; nextTick(draw)">{{ ip.label }}</button>
                   </div>
                 </div>
                 <div class="sm-ctrl-row">
@@ -409,22 +369,15 @@
                   <label class="toggle-label">
                     <input type="checkbox" v-model="integratedRoute" @change="nextTick(draw)" />
                     <span class="toggle-track"><span class="toggle-thumb"/></span>
-                    Show
+                    Show route
                   </label>
                 </div>
               </template>
-
-              <!-- Full / Backdrop controls -->
               <template v-if="embedStyle === 'backdrop'">
-                <div class="sm-ctrl-row">
-                  <span class="sm-ctrl-lbl">Theme</span>
-                </div>
                 <div class="sm-chips sm-chips--wrap">
-                  <button
-                    v-for="f in FORMAT_OPTIONS" :key="f.key"
+                  <button v-for="f in FORMAT_OPTIONS" :key="f.key"
                     :class="['sm-chip', { on: stickerFormat === f.key }]"
-                    @click="setFormat(f.key)"
-                  >{{ f.label }}</button>
+                    @click="setFormat(f.key)">{{ f.label }}</button>
                 </div>
                 <p class="sm-drag-hint">Your photo fills the full sticker area</p>
               </template>
@@ -433,28 +386,16 @@
           </div>
         </Transition>
 
-        <!-- Bottom navigation -->
+        <!-- ── Mobile: bottom navigation ─────────────────────────────────────── -->
         <nav class="sm-nav">
-          <!-- Canvas size — only when no photo loaded -->
-          <button
-            v-if="!bgImageSrc"
-            class="sm-nav-btn"
-            :class="{ active: activeTool === 'orient' }"
-            @click="toggleTool('orient')"
-          >
+          <button v-if="!bgImageSrc" class="sm-nav-btn" :class="{ active: activeTool === 'orient' }" @click="toggleTool('orient')">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
               <rect x="3" y="4" width="7" height="10" rx="1.5"/>
               <rect x="14" y="10" width="7" height="10" rx="1.5"/>
             </svg>
             <span>Canvas</span>
           </button>
-
-          <!-- Format -->
-          <button
-            class="sm-nav-btn"
-            :class="{ active: activeTool === 'format' }"
-            @click="toggleTool('format')"
-          >
+          <button class="sm-nav-btn" :class="{ active: activeTool === 'format' }" @click="toggleTool('format')">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
               <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-.99 0-.83.67-1.5 1.5-1.5H16c2.76 0 5-2.24 5-5 0-4.42-4.03-8-9-8z"/>
               <circle cx="6.5" cy="11.5" r="1.5" fill="currentColor" stroke="none"/>
@@ -464,13 +405,7 @@
             </svg>
             <span>Theme</span>
           </button>
-
-          <!-- Photo -->
-          <button
-            class="sm-nav-btn"
-            :class="{ active: activeTool === 'photo' }"
-            @click="toggleTool('photo')"
-          >
+          <button class="sm-nav-btn" :class="{ active: activeTool === 'photo' }" @click="toggleTool('photo')">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
               <rect x="3" y="5" width="18" height="14" rx="2"/>
               <circle cx="8.5" cy="11.5" r="2"/>
@@ -478,14 +413,7 @@
             </svg>
             <span>Photo</span>
           </button>
-
-          <!-- Style (only when photo loaded) -->
-          <button
-            v-if="bgImageSrc"
-            class="sm-nav-btn"
-            :class="{ active: activeTool === 'style' }"
-            @click="toggleTool('style')"
-          >
+          <button v-if="bgImageSrc" class="sm-nav-btn" :class="{ active: activeTool === 'style' }" @click="toggleTool('style')">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
               <rect x="3" y="3" width="18" height="18" rx="2"/>
               <path d="M3 15l5-4.5 4 3 3-4 6 4.5"/>
@@ -493,8 +421,6 @@
             </svg>
             <span>Style</span>
           </button>
-
-          <!-- Save -->
           <button class="sm-nav-btn sm-nav-save" @click="download">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -529,15 +455,19 @@ const ORIENT_OPTIONS = [
   { key: 'landscape', label: 'Landscape', rx: 1, ry: 4, rw: 14, rh: 8  },
 ]
 const ORIENT_DIMS = {
-  portrait:  { w: 480, h: 600, previewW: 340 },
-  square:    { w: 480, h: 480, previewW: 380 },
-  landscape: { w: 720, h: 400, previewW: 520 },
+  portrait:  { w: 480, h: 600, previewW: 480, mobilePreviewW: 300 },
+  square:    { w: 480, h: 480, previewW: 520, mobilePreviewW: 320 },
+  landscape: { w: 720, h: 400, previewW: 680, mobilePreviewW: 380 },
 }
 
 const orientation = ref('portrait')
 const cw       = computed(() => ORIENT_DIMS[orientation.value].w)
 const ch       = computed(() => ORIENT_DIMS[orientation.value].h)
-const previewW = computed(() => ORIENT_DIMS[orientation.value].previewW)
+const previewW = computed(() =>
+  isMobile.value
+    ? ORIENT_DIMS[orientation.value].mobilePreviewW
+    : ORIENT_DIMS[orientation.value].previewW
+)
 
 function setOrientation(o) { orientation.value = o; nextTick(draw) }
 
@@ -551,6 +481,9 @@ const FORMAT_OPTIONS = [
   { key: 'neon',     label: 'Neon'     },
   { key: 'minimal',  label: 'Minimal'  },
   { key: 'strava',   label: 'Strava'   },
+  { key: 'glow',     label: 'Glow'     },
+  { key: 'stats',    label: 'Stats'    },
+  { key: 'film',     label: 'Film'     },
 ]
 
 const stickerFormat = ref('classic')
@@ -558,7 +491,8 @@ function setFormat(f) { stickerFormat.value = f; nextTick(draw) }
 
 // ── Panel state ───────────────────────────────────────────────────────────────
 
-const open      = ref(false)
+const open         = ref(false)
+const sidebarTab   = ref('theme') // 'theme' | 'photo'
 const canvasRef = ref(null)
 const wrapRef   = ref(null)
 const dialogRef = ref(null)
@@ -590,6 +524,8 @@ const INTEGRATED_LAYOUTS = [
   { key: 'float',   label: 'Float' },
   { key: 'minimal', label: 'Clean' },
   { key: 'strip',   label: 'Strip' },
+  { key: 'stats',   label: 'Stats' },
+  { key: 'film',    label: 'Film'  },
 ]
 const integratedLayout = ref('bar')
 
@@ -619,8 +555,8 @@ const embedCh = computed(() => {
   }
   return ch.value
 })
-const EMBED_PREVIEW_W        = 480
-const EMBED_PREVIEW_W_MOBILE = 360
+const EMBED_PREVIEW_W        = 660
+const EMBED_PREVIEW_W_MOBILE = 340
 const embedPreviewW = computed(() => {
   if (!bgImage.value) return previewW.value
   if (window.innerWidth > 600) return EMBED_PREVIEW_W
@@ -646,7 +582,16 @@ function onBgPick(e) {
   if (file) loadBgFile(file)
   e.target.value = ''
 }
+function clearBgImage() {
+  bgImageSrc.value = null
+  bgImage.value = null
+  bgFileName.value = ''
+  dragPos.value = null
+  nextTick(draw)
+}
+
 function loadBgFile(file) {
+  sidebarTab.value = 'photo'
   bgFileName.value = file.name
   const reader = new FileReader()
   reader.onload = ev => {
@@ -820,6 +765,12 @@ function drawBackdropMode(ctx) {
     renderMinimal(ctx, props.points, props.stats, props.trackName, props.accentColor, W, H, orient, theme)
   } else if (format === 'strava') {
     renderStrava(ctx, props.points, props.stats, props.trackName, props.accentColor, W, H, orient, theme)
+  } else if (format === 'glow') {
+    renderGlow(ctx, props.points, props.stats, props.trackName, props.accentColor, W, H, orient, theme)
+  } else if (format === 'stats') {
+    drawStatsPanel(ctx, props.points, props.stats, props.trackName, props.accentColor, ar, ag, ab, W, H, theme)
+  } else if (format === 'film') {
+    drawFilmComposition(ctx, props.points, props.stats, props.trackName, props.accentColor, ar, ag, ab, W, H, theme, true)
   } else {
     renderFull(ctx, props.points, props.stats, props.trackName, props.accentColor, W, H, orient, theme, ar, ag, ab)
   }
@@ -885,13 +836,51 @@ function buildBackdropTheme(format, W, H, ctx, accent, ar, ag, ab) {
         shadowColor: 'rgba(0,0,0,0.95)',
         routeHalo:   'rgba(0,0,0,0.4)',
       }
-    case 'strava':
-      ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(0, 0, W, H)
+    case 'strava': {
+      const bg = ctx.createLinearGradient(0, H * 0.38, 0, H)
+      bg.addColorStop(0,    'rgba(0,0,0,0)')
+      bg.addColorStop(0.25, 'rgba(0,0,0,0.55)')
+      bg.addColorStop(1,    'rgba(0,0,0,0.84)')
+      ctx.fillStyle = bg; ctx.fillRect(0, H * 0.38, W, H * 0.62)
       return {
         textPrimary: '#fff',
         acDim:       `rgba(${ar},${ag},${ab},1)`,
         statLabel:   'rgba(255,255,255,0.55)',
         shadowColor: 'rgba(0,0,0,0.9)',
+      }
+    }
+    case 'glow':
+      ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(0, 0, W, H)
+      return {
+        textPrimary: '#fff',
+        acDim:       `rgba(${ar},${ag},${ab},0.9)`,
+        statLabel:   `rgba(${ar},${ag},${ab},0.5)`,
+        shadowColor: `rgba(${ar},${ag},${ab},0.7)`,
+        routeHalo:   `rgba(${ar},${ag},${ab},0.12)`,
+        isGlow:      true,
+      }
+    case 'film':
+      ctx.fillStyle = 'rgba(0,0,0,0.18)'; ctx.fillRect(0, 0, W, H)
+      return {
+        headerColor: 'rgba(255,255,255,0.52)',
+        labelColor:  'rgba(255,255,255,0.38)',
+        valueColor:  '#fff',
+        unitColor:   `rgba(${ar},${ag},${ab},0.88)`,
+        divider:     'rgba(255,255,255,0.10)',
+        shadowColor: 'rgba(0,0,0,0.92)',
+        acDim:       `rgba(${ar},${ag},${ab},0.80)`,
+      }
+    case 'stats':
+      ctx.fillStyle = 'rgba(0,0,0,0.22)'; ctx.fillRect(0, 0, W, H)
+      return {
+        cardBg:      'rgba(10,11,14,0.86)',
+        cardBorder:  'rgba(255,255,255,0.07)',
+        headerColor: 'rgba(255,255,255,0.45)',
+        labelColor:  'rgba(255,255,255,0.40)',
+        valueColor:  '#fff',
+        unitColor:   `rgba(${ar},${ag},${ab},0.85)`,
+        divider:     'rgba(255,255,255,0.06)',
+        shadowColor: 'rgba(0,0,0,0.90)',
       }
     default: // classic, dark
       ctx.fillStyle = 'rgba(0,0,0,0.32)'; ctx.fillRect(0, 0, W, H)
@@ -923,193 +912,35 @@ function drawIntegratedMode(ctx) {
   if      (integratedLayout.value === 'float')   drawIntFloat(ctx, W, H, pts, stats, accent, ar, ag, ab, atBottom)
   else if (integratedLayout.value === 'minimal')  drawIntMinimal(ctx, W, H, pts, stats, accent, ar, ag, ab, atBottom)
   else if (integratedLayout.value === 'strip')    drawIntStrip(ctx, W, H, pts, stats, accent, ar, ag, ab, atBottom)
+  else if (integratedLayout.value === 'stats')    drawIntStats(ctx, W, H, pts, stats, accent, ar, ag, ab, atBottom)
+  else if (integratedLayout.value === 'film')     drawIntFilm(ctx, W, H, pts, stats, accent, ar, ag, ab, atBottom)
   else                                            drawIntBar(ctx, W, H, pts, stats, accent, ar, ag, ab, atBottom)
 
   drawFooter(ctx, W, H)
 }
 
-// ── Integrated: Bar layout (full-width gradient bar) ──────────────────────────
+// ── Integrated: Bar layout — cinematic full-width vignette ────────────────────
 function drawIntBar(ctx, W, H, pts, stats, accent, ar, ag, ab, atBottom) {
   const isPortrait = H > W * 1.1
-  const BAR_H = isPortrait ? Math.round(W * 0.46) : Math.round(H * 0.22)
-  const barY  = atBottom ? H - BAR_H : 0
+  const REF  = Math.min(W, H)
+  const PAD  = Math.round(REF * 0.048)
+  const sdw  = (b) => { ctx.shadowColor = 'rgba(0,0,0,0.95)'; ctx.shadowBlur = b }
+  const nsdw = ()  => { ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0 }
 
-  const grad = ctx.createLinearGradient(0, barY, 0, barY + BAR_H)
+  // Tall soft cinematic vignette — no hard bar edge
+  const VIGN_H = Math.round(H * (isPortrait ? 0.62 : 0.50))
+  const vignY  = atBottom ? H - VIGN_H : 0
+  const vGrad  = ctx.createLinearGradient(0, atBottom ? vignY : 0, 0, atBottom ? H : VIGN_H)
   if (atBottom) {
-    grad.addColorStop(0,    'rgba(0,0,0,0)')
-    grad.addColorStop(0.25, 'rgba(0,0,0,0.60)')
-    grad.addColorStop(1,    'rgba(0,0,0,0.88)')
+    vGrad.addColorStop(0,    'rgba(0,0,0,0)')
+    vGrad.addColorStop(0.35, 'rgba(0,0,0,0.20)')
+    vGrad.addColorStop(1,    'rgba(0,0,0,0.88)')
   } else {
-    grad.addColorStop(0,    'rgba(0,0,0,0.88)')
-    grad.addColorStop(0.75, 'rgba(0,0,0,0.60)')
-    grad.addColorStop(1,    'rgba(0,0,0,0)')
+    vGrad.addColorStop(0,    'rgba(0,0,0,0.88)')
+    vGrad.addColorStop(0.65, 'rgba(0,0,0,0.20)')
+    vGrad.addColorStop(1,    'rgba(0,0,0,0)')
   }
-  ctx.fillStyle = grad; ctx.fillRect(0, barY, W, BAR_H)
-
-  ctx.fillStyle = accent; ctx.globalAlpha = 0.75
-  ctx.fillRect(0, atBottom ? barY : barY + BAR_H - 2, W, 2)
-  ctx.globalAlpha = 1
-
-  const shadow   = (b = 8) => { ctx.shadowColor = 'rgba(0,0,0,0.9)'; ctx.shadowBlur = b }
-  const noShadow = ()      => { ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0 }
-  const namePad  = Math.round(W * 0.035)
-
-  if (integratedRoute.value && pts.length > 1) {
-    const ROUTE_PAD = Math.round(W * 0.03)
-    const ROUTE_SZ  = isPortrait ? Math.round(W * 0.20) : Math.round(Math.min(W, H) * 0.28)
-    const rx = W - ROUTE_SZ - ROUTE_PAD
-    const ry = atBottom ? ROUTE_PAD : H - ROUTE_SZ - ROUTE_PAD
-    ctx.save()
-    ctx.beginPath(); ctx.arc(rx + ROUTE_SZ/2, ry + ROUTE_SZ/2, ROUTE_SZ/2, 0, Math.PI*2)
-    ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fill(); ctx.clip()
-    drawRoute(ctx, pts, rx, ry, ROUTE_SZ, ROUTE_SZ, accent, { routeHalo: 'rgba(0,0,0,0.5)', isNeon: false, sparkBacking: false })
-    ctx.restore()
-  }
-
-  const movingMs = computeMovingTime(pts)
-  const grid4 = [
-    { v: (stats?.totalDist ?? 0).toFixed(2), u: 'km',   l: 'Distance'    },
-    { v: String(stats?.elevGain ?? 0),        u: 'm',    l: 'Elevation'   },
-    { v: fmtHMS(movingMs),                   u: '',     l: 'Moving Time' },
-    { v: (stats?.avgSpeed ?? 0).toFixed(1),  u: 'km/h', l: 'Avg Speed'   },
-  ]
-
-  if (isPortrait) {
-    const nameSz  = Math.round(W * 0.044)
-    const dateSz  = Math.round(nameSz * 0.72)
-    const HDR_H   = Math.round(BAR_H * 0.33)
-    const hdrTop  = atBottom ? barY           : barY + BAR_H - HDR_H
-    const gridTop = atBottom ? barY + HDR_H   : barY
-    const gridH   = BAR_H - HDR_H
-    const nameY   = hdrTop + Math.round(HDR_H * (atBottom ? 0.14 : 0.10))
-
-    ctx.font = `700 ${nameSz}px ${FONT}`
-    ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'
-    let nameStr = props.trackName || 'Activity'
-    while (ctx.measureText(nameStr).width > W * 0.60 && nameStr.length > 3) nameStr = nameStr.slice(0, -1)
-    if (nameStr !== (props.trackName || 'Activity')) nameStr += '…'
-    shadow(10); ctx.fillText(nameStr, namePad, nameY); noShadow()
-
-    const startPt = pts.find(p => p.time)
-    if (startPt?.time) {
-      ctx.font = `500 ${dateSz}px ${FONT}`
-      ctx.fillStyle = `rgba(${ar},${ag},${ab},0.95)`
-      ctx.textAlign = 'left'; ctx.textBaseline = 'top'; shadow(6)
-      ctx.fillText(startPt.time.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }), namePad, nameY + nameSz * 1.28)
-      noShadow()
-    }
-
-    const colW   = W / 2, rowH = gridH / 2
-    const valSz  = Math.round(Math.min(W * 0.09, colW * 0.40))
-    const unitSz = Math.round(valSz * 0.44), lblSz = Math.round(valSz * 0.34)
-
-    ctx.save()
-    ctx.strokeStyle = 'rgba(255,255,255,0.13)'; ctx.lineWidth = 1
-    ctx.beginPath(); ctx.moveTo(W / 2, gridTop + rowH * 0.15); ctx.lineTo(W / 2, gridTop + gridH - rowH * 0.15); ctx.stroke()
-    ctx.beginPath(); ctx.moveTo(W * 0.08, gridTop + rowH); ctx.lineTo(W * 0.92, gridTop + rowH); ctx.stroke()
-    ctx.restore()
-
-    grid4.forEach((s, i) => {
-      const cx     = (i % 2) * colW + colW / 2
-      const cellCy = gridTop + Math.floor(i / 2) * rowH + rowH / 2
-      ctx.font = `600 ${lblSz}px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,0.6)'
-      ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
-      shadow(5); ctx.fillText(s.l, cx, cellCy - Math.round(valSz * 0.1)); noShadow()
-      ctx.font = `800 ${valSz}px ${FONT}`
-      const vw = ctx.measureText(s.v).width
-      ctx.font = `600 ${unitSz}px ${FONT}`
-      const blockW = vw + (s.u ? ctx.measureText(s.u).width + Math.round(valSz * 0.1) : 0)
-      const startX = cx - blockW / 2
-      ctx.font = `800 ${valSz}px ${FONT}`; ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'
-      shadow(10); ctx.fillText(s.v, startX, cellCy + Math.round(valSz * 0.06)); noShadow()
-      if (s.u) {
-        ctx.font = `700 ${unitSz}px ${FONT}`; ctx.fillStyle = `rgba(${ar},${ag},${ab},1)`
-        ctx.textAlign = 'left'; ctx.textBaseline = 'top'
-        shadow(7); ctx.fillText(s.u, startX + vw + Math.round(valSz * 0.1), cellCy + valSz * 0.56); noShadow()
-      }
-    })
-
-  } else {
-    const colW   = W / grid4.length
-    const valSz  = Math.round(Math.min(H * 0.065, colW * 0.36))
-    const unitSz = Math.round(valSz * 0.42), lblSz = Math.round(valSz * 0.36)
-    const cy     = atBottom ? barY + BAR_H * 0.62 : barY + BAR_H * 0.42
-
-    grid4.forEach((s, i) => {
-      const cx = i * colW + colW / 2
-      ctx.font = `600 ${lblSz}px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,0.6)'
-      ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
-      shadow(6); ctx.fillText(s.l, cx, cy - 4); noShadow()
-      ctx.font = `800 ${valSz}px ${FONT}`
-      const vw = ctx.measureText(s.v).width
-      ctx.font = `600 ${unitSz}px ${FONT}`
-      const blockW = vw + (s.u ? ctx.measureText(s.u).width + Math.round(valSz * 0.1) : 0)
-      const startX = cx - blockW / 2
-      ctx.font = `800 ${valSz}px ${FONT}`; ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'
-      shadow(12); ctx.fillText(s.v, startX, cy + 2); noShadow()
-      if (s.u) {
-        ctx.font = `700 ${unitSz}px ${FONT}`; ctx.fillStyle = `rgba(${ar},${ag},${ab},1)`
-        ctx.textAlign = 'left'; ctx.textBaseline = 'top'
-        shadow(8); ctx.fillText(s.u, startX + vw + Math.round(valSz * 0.1), cy + valSz * 0.55); noShadow()
-      }
-    })
-
-    const nameSz = Math.round(H * 0.028)
-    const nameY  = atBottom ? barY + nameSz * 0.8 : barY + BAR_H - nameSz * 1.6
-    ctx.font = `700 ${nameSz}px ${FONT}`; ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'
-    let nameStr = props.trackName || 'Activity'
-    while (ctx.measureText(nameStr).width > W * 0.6 && nameStr.length > 3) nameStr = nameStr.slice(0, -1)
-    if (nameStr !== (props.trackName || 'Activity')) nameStr += '…'
-    shadow(10); ctx.fillText(nameStr, namePad, nameY); noShadow()
-    const startPt = pts.find(p => p.time)
-    if (startPt?.time) {
-      ctx.font = `500 ${Math.round(nameSz * 0.78)}px ${FONT}`; ctx.fillStyle = `rgba(${ar},${ag},${ab},0.95)`
-      ctx.textAlign = 'left'; ctx.textBaseline = 'top'; shadow(6)
-      ctx.fillText(startPt.time.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }), namePad, nameY + nameSz * 1.25)
-      noShadow()
-    }
-  }
-}
-
-// ── Integrated: Float layout (corner card) ────────────────────────────────────
-function drawIntFloat(ctx, W, H, pts, stats, accent, ar, ag, ab, atBottom) {
-  const isPortrait = H > W * 1.1
-  const shadow   = (b = 8) => { ctx.shadowColor = 'rgba(0,0,0,0.9)'; ctx.shadowBlur = b }
-  const noShadow = ()      => { ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0 }
-
-  const MARGIN = Math.round(W * 0.04)
-  const CARD_W = Math.round(W * (isPortrait ? 0.52 : 0.38))
-  const PAD    = Math.round(CARD_W * 0.08)
-  const nameSz = Math.round(CARD_W * 0.075)
-  const valSz  = Math.round(Math.min(CARD_W * 0.15, CARD_W / 2 * 0.42))
-  const unitSz = Math.round(valSz * 0.44), lblSz = Math.round(valSz * 0.34)
-  const rowH   = Math.round(valSz * 2.2)
-  const CARD_H = PAD + Math.round(nameSz * 1.5) + 6 + rowH * 2 + PAD
-  const cardX  = W - CARD_W - MARGIN
-  const cardY  = atBottom ? H - CARD_H - MARGIN : MARGIN
-
-  ctx.save()
-  ctx.shadowColor = 'rgba(0,0,0,0.55)'; ctx.shadowBlur = 20
-  rrect(ctx, cardX, cardY, CARD_W, CARD_H, Math.round(CARD_W * 0.07))
-  ctx.fillStyle = 'rgba(6,6,8,0.84)'; ctx.fill()
-  ctx.restore()
-
-  ctx.save()
-  rrect(ctx, cardX, cardY, CARD_W, CARD_H, Math.round(CARD_W * 0.07)); ctx.clip()
-  ctx.fillStyle = accent; ctx.globalAlpha = 0.85
-  ctx.fillRect(cardX, cardY + CARD_H * 0.12, 3, CARD_H * 0.76)
-  ctx.globalAlpha = 1; ctx.restore()
-
-  ctx.font = `700 ${nameSz}px ${FONT}`; ctx.fillStyle = '#fff'
-  ctx.textAlign = 'left'; ctx.textBaseline = 'top'
-  let nameStr = props.trackName || 'Activity'
-  while (ctx.measureText(nameStr).width > CARD_W - PAD * 2 - 6 && nameStr.length > 3) nameStr = nameStr.slice(0, -1)
-  if (nameStr !== (props.trackName || 'Activity')) nameStr += '…'
-  shadow(8); ctx.fillText(nameStr, cardX + PAD + 5, cardY + PAD); noShadow()
-
-  const divY = cardY + PAD + nameSz * 1.4
-  ctx.fillStyle = `rgba(${ar},${ag},${ab},0.35)`
-  ctx.fillRect(cardX + PAD, Math.round(divY), CARD_W - PAD * 2, 1)
+  ctx.fillStyle = vGrad; ctx.fillRect(0, vignY, W, VIGN_H)
 
   const movingMs = computeMovingTime(pts)
   const grid4 = [
@@ -1118,36 +949,243 @@ function drawIntFloat(ctx, W, H, pts, stats, accent, ar, ag, ab, atBottom) {
     { v: fmtHMS(movingMs),                   u: '',     l: 'Time'      },
     { v: (stats?.avgSpeed ?? 0).toFixed(1),  u: 'km/h', l: 'Speed'     },
   ]
-  const gridTop = divY + 8, colW = (CARD_W - PAD * 2) / 2
 
-  grid4.forEach((s, i) => {
-    const cx = cardX + PAD + (i % 2) * colW + colW / 2
-    const cy = gridTop + Math.floor(i / 2) * rowH + rowH / 2
-    ctx.font = `600 ${lblSz}px ${FONT}`; ctx.fillStyle = `rgba(${ar},${ag},${ab},0.75)`
-    ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
-    shadow(4); ctx.fillText(s.l, cx, cy - Math.round(valSz * 0.1)); noShadow()
-    ctx.font = `800 ${valSz}px ${FONT}`
-    const vw = ctx.measureText(s.v).width
-    ctx.font = `600 ${unitSz}px ${FONT}`
-    const blockW = vw + (s.u ? ctx.measureText(s.u).width + Math.round(valSz * 0.1) : 0)
-    const startX = cx - blockW / 2
-    ctx.font = `800 ${valSz}px ${FONT}`; ctx.fillStyle = '#fff'
+  const nameSz = Math.round(REF * 0.028)
+  const dateSz = Math.round(nameSz * 0.78)
+  const valSz  = Math.round(REF * (isPortrait ? 0.092 : 0.070))
+  const unitSz = Math.round(valSz * 0.40)
+  const lblSz  = Math.round(valSz * 0.27)
+
+  // Route thumbnail in opposite corner
+  if (integratedRoute.value && pts.length > 1) {
+    const ROUTE_SZ  = Math.round(REF * (isPortrait ? 0.20 : 0.22))
+    const ROUTE_PAD = Math.round(REF * 0.030)
+    const rx = W - ROUTE_SZ - ROUTE_PAD
+    const ry = atBottom ? ROUTE_PAD : H - ROUTE_SZ - ROUTE_PAD
+    ctx.save()
+    ctx.beginPath(); ctx.arc(rx + ROUTE_SZ/2, ry + ROUTE_SZ/2, ROUTE_SZ/2, 0, Math.PI*2)
+    ctx.fillStyle = 'rgba(0,0,0,0.28)'; ctx.fill(); ctx.clip()
+    drawRoute(ctx, pts, rx, ry, ROUTE_SZ, ROUTE_SZ, accent, { routeHalo: 'rgba(0,0,0,0.45)', isNeon: false, sparkBacking: false })
+    ctx.restore()
+  }
+
+  const startPt = pts.find(p => p.time)
+
+  if (isPortrait) {
+    // Name + date in upper portion of vignette zone
+    const ZONE_H  = Math.round(H * 0.30)
+    const zoneY   = atBottom ? H - ZONE_H : 0
+    const textH   = nameSz * (startPt?.time ? 2.6 : 1.5) + lblSz * 1.6 + valSz * 1.6
+    const nameY   = atBottom ? H - textH - PAD : PAD
+
+    ctx.font = `300 ${nameSz}px ${FONT}`
+    ctx.fillStyle = 'rgba(255,255,255,0.72)'
     ctx.textAlign = 'left'; ctx.textBaseline = 'top'
-    shadow(10); ctx.fillText(s.v, startX, cy + Math.round(valSz * 0.06)); noShadow()
-    if (s.u) {
-      ctx.font = `700 ${unitSz}px ${FONT}`; ctx.fillStyle = `rgba(${ar},${ag},${ab},1)`
-      ctx.textAlign = 'left'; ctx.textBaseline = 'top'
-      shadow(7); ctx.fillText(s.u, startX + vw + Math.round(valSz * 0.1), cy + valSz * 0.56); noShadow()
+    let nameStr = props.trackName || 'Activity'
+    while (ctx.measureText(nameStr).width > W * 0.68 && nameStr.length > 3) nameStr = nameStr.slice(0, -1)
+    if (nameStr !== (props.trackName || 'Activity')) nameStr += '…'
+    sdw(10); ctx.fillText(nameStr, PAD, nameY); nsdw()
+
+    if (startPt?.time) {
+      ctx.font = `300 ${dateSz}px ${FONT}`
+      ctx.fillStyle = `rgba(${ar},${ag},${ab},0.70)`
+      sdw(6); ctx.fillText(startPt.time.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }), PAD, nameY + nameSz * 1.35); nsdw()
     }
+
+    const statsY = nameY + nameSz * (startPt?.time ? 2.6 : 1.5)
+    const colW   = (W - PAD * 2) / grid4.length
+
+    grid4.forEach((s, i) => {
+      const cx = PAD + i * colW + colW / 2
+      // Thin vertical separator — no fill background
+      if (i > 0) {
+        ctx.fillStyle = 'rgba(255,255,255,0.10)'
+        ctx.fillRect(PAD + i * colW, statsY, 1, lblSz + valSz * 1.7)
+      }
+      ctx.font = `400 ${lblSz}px ${FONT}`
+      ctx.fillStyle = `rgba(${ar},${ag},${ab},0.70)`
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top'
+      sdw(4); ctx.fillText(s.l, cx, statsY); nsdw()
+
+      const valY = statsY + lblSz * 1.6
+      ctx.font = `800 ${valSz}px ${FONT}`
+      const vw = ctx.measureText(s.v).width
+      ctx.font = `600 ${unitSz}px ${FONT}`
+      const uw = s.u ? ctx.measureText(s.u).width : 0
+      const bw = vw + (uw ? uw + Math.round(valSz * 0.08) : 0)
+      const sx = cx - bw / 2
+      ctx.font = `800 ${valSz}px ${FONT}`
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'
+      sdw(22); ctx.fillText(s.v, sx, valY); nsdw()
+      if (s.u) {
+        ctx.font = `600 ${unitSz}px ${FONT}`
+        ctx.fillStyle = `rgba(${ar},${ag},${ab},1)`
+        sdw(12); ctx.fillText(s.u, sx + vw + Math.round(valSz * 0.08), valY + valSz * 0.56); nsdw()
+      }
+    })
+
+  } else {
+    // Landscape: single stats row, name beside
+    const colW  = W / grid4.length
+    const cy    = atBottom ? H - Math.round(H * 0.13) : Math.round(H * 0.13)
+
+    grid4.forEach((s, i) => {
+      const cx = i * colW + colW / 2
+      if (i > 0) {
+        ctx.fillStyle = 'rgba(255,255,255,0.08)'
+        ctx.fillRect(i * colW, atBottom ? cy - valSz * 0.25 : cy, 1, lblSz + valSz * 1.5)
+      }
+      ctx.font = `400 ${lblSz}px ${FONT}`
+      ctx.fillStyle = `rgba(${ar},${ag},${ab},0.70)`
+      ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
+      sdw(4); ctx.fillText(s.l, cx, cy - Math.round(valSz * 0.08)); nsdw()
+
+      ctx.font = `800 ${valSz}px ${FONT}`
+      const vw = ctx.measureText(s.v).width
+      ctx.font = `600 ${unitSz}px ${FONT}`
+      const uw = s.u ? ctx.measureText(s.u).width : 0
+      const bw = vw + (uw ? uw + Math.round(valSz * 0.08) : 0)
+      const sx = cx - bw / 2
+      ctx.font = `800 ${valSz}px ${FONT}`
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'
+      sdw(20); ctx.fillText(s.v, sx, cy); nsdw()
+      if (s.u) {
+        ctx.font = `600 ${unitSz}px ${FONT}`
+        ctx.fillStyle = `rgba(${ar},${ag},${ab},1)`
+        sdw(10); ctx.fillText(s.u, sx + vw + Math.round(valSz * 0.08), cy + valSz * 0.56); nsdw()
+      }
+    })
+
+    const nameY = atBottom ? PAD : H - nameSz * (startPt?.time ? 2.6 : 1.6) - PAD
+    ctx.font = `300 ${nameSz}px ${FONT}`
+    ctx.fillStyle = 'rgba(255,255,255,0.65)'
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top'
+    let nameStr = props.trackName || 'Activity'
+    while (ctx.measureText(nameStr).width > W * 0.55 && nameStr.length > 3) nameStr = nameStr.slice(0, -1)
+    if (nameStr !== (props.trackName || 'Activity')) nameStr += '…'
+    sdw(10); ctx.fillText(nameStr, PAD, nameY); nsdw()
+    if (startPt?.time) {
+      ctx.font = `300 ${dateSz}px ${FONT}`
+      ctx.fillStyle = `rgba(${ar},${ag},${ab},0.65)`
+      sdw(5); ctx.fillText(startPt.time.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }), PAD, nameY + nameSz * 1.35); nsdw()
+    }
+  }
+}
+
+// ── Integrated: Float layout — cinematic corner text, no card ─────────────────
+function drawIntFloat(ctx, W, H, pts, stats, accent, ar, ag, ab, atBottom) {
+  const isPortrait = H > W * 1.1
+  const REF    = Math.min(W, H)
+  const MARGIN = Math.round(REF * 0.042)
+  const sdw    = (b) => { ctx.shadowColor = 'rgba(0,0,0,0.95)'; ctx.shadowBlur = b }
+  const nsdw   = ()  => { ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0 }
+
+  const COL_W  = Math.round(REF * (isPortrait ? 0.54 : 0.42))
+  const anchorX = W - MARGIN          // right edge of text column
+  const nameSz  = Math.round(COL_W * 0.072)
+  const heroSz  = Math.round(COL_W * 0.30)
+  const heroUnitSz = Math.round(heroSz * 0.38)
+  const subSz   = Math.round(COL_W * 0.115)
+  const subUnitSz  = Math.round(subSz * 0.48)
+  const lblSz   = Math.round(nameSz * 0.72)
+
+  // Soft radial dark gradient behind the text — no hard box
+  const totalTextH = nameSz * 1.5 + heroSz * 1.4 + subSz * 3 * 1.7 + MARGIN
+  const anchorY    = atBottom ? H - totalTextH - MARGIN : MARGIN
+  const radCX = anchorX - COL_W * 0.4, radCY = anchorY + totalTextH * 0.45
+  const rGrad = ctx.createRadialGradient(radCX, radCY, 0, radCX, radCY, COL_W * 1.05)
+  rGrad.addColorStop(0, 'rgba(0,0,0,0.52)')
+  rGrad.addColorStop(1, 'rgba(0,0,0,0)')
+  ctx.save()
+  ctx.fillStyle = rGrad
+  ctx.fillRect(anchorX - COL_W * 1.1, anchorY - MARGIN, COL_W * 1.3, totalTextH + MARGIN * 2)
+  ctx.restore()
+
+  let y = anchorY
+
+  // Activity name — right-aligned, light weight
+  ctx.font = `300 ${nameSz}px ${FONT}`
+  ctx.fillStyle = 'rgba(255,255,255,0.65)'
+  ctx.textAlign = 'right'; ctx.textBaseline = 'top'
+  let nameStr = props.trackName || 'Activity'
+  while (ctx.measureText(nameStr).width > COL_W && nameStr.length > 3) nameStr = nameStr.slice(0, -1)
+  if (nameStr !== (props.trackName || 'Activity')) nameStr += '…'
+  sdw(10); ctx.fillText(nameStr, anchorX, y); nsdw()
+  y += nameSz * 1.5
+
+  // Thin accent underline
+  const ruleW = Math.min(ctx.measureText(nameStr).width, COL_W * 0.80)
+  ctx.fillStyle = `rgba(${ar},${ag},${ab},0.55)`
+  ctx.fillRect(anchorX - ruleW, Math.round(y), ruleW, Math.max(1, Math.round(REF * 0.003)))
+  y += Math.round(nameSz * 0.55)
+
+  // Hero stat: distance
+  const distKm = (stats?.totalDist ?? 0).toFixed(2)
+  ctx.font = `800 ${heroSz}px ${FONT}`
+  const distW = ctx.measureText(distKm).width
+  ctx.font = `600 ${heroUnitSz}px ${FONT}`
+  const unitW = ctx.measureText('km').width
+  const gap   = Math.round(heroSz * 0.07)
+  const blockW = distW + unitW + gap
+  const heroX  = anchorX - blockW
+
+  ctx.font = `800 ${heroSz}px ${FONT}`
+  ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'
+  sdw(30); ctx.fillText(distKm, heroX, y); nsdw()
+  ctx.font = `600 ${heroUnitSz}px ${FONT}`
+  ctx.fillStyle = `rgba(${ar},${ag},${ab},1)`
+  sdw(16); ctx.fillText('km', heroX + distW + gap, y + heroSz * 0.55); nsdw()
+  y += heroSz * 1.35
+
+  // Supporting stats stacked: Elevation, Time, Speed
+  const movingMs = computeMovingTime(pts)
+  const sub3 = [
+    { l: 'Elevation', v: String(stats?.elevGain ?? 0),       u: 'm'    },
+    { l: 'Time',      v: fmtHMS(movingMs),                   u: ''     },
+    { l: 'Speed',     v: (stats?.avgSpeed ?? 0).toFixed(1), u: 'km/h' },
+  ]
+  sub3.forEach((s, i) => {
+    // Thin separator
+    if (i > 0) {
+      ctx.fillStyle = 'rgba(255,255,255,0.08)'
+      ctx.fillRect(anchorX - COL_W * 0.72, Math.round(y - Math.round(subSz * 0.18)), COL_W * 0.72, 1)
+    }
+
+    // Label
+    ctx.font = `400 ${lblSz}px ${FONT}`
+    ctx.fillStyle = `rgba(${ar},${ag},${ab},0.65)`
+    ctx.textAlign = 'right'; ctx.textBaseline = 'top'
+    sdw(5); ctx.fillText(s.l, anchorX, y); nsdw()
+    y += lblSz * 1.25
+
+    // Value + unit, right-aligned as a block
+    ctx.font = `700 ${subSz}px ${FONT}`
+    const vw = ctx.measureText(s.v).width
+    ctx.font = `500 ${subUnitSz}px ${FONT}`
+    const uw = s.u ? ctx.measureText(s.u).width : 0
+    const g2 = s.u ? Math.round(subSz * 0.07) : 0
+    const bw = vw + uw + g2
+    const sx = anchorX - bw
+
+    ctx.font = `700 ${subSz}px ${FONT}`
+    ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'
+    sdw(16); ctx.fillText(s.v, sx, y); nsdw()
+    if (s.u) {
+      ctx.font = `500 ${subUnitSz}px ${FONT}`
+      ctx.fillStyle = `rgba(${ar},${ag},${ab},0.85)`
+      sdw(8); ctx.fillText(s.u, sx + vw + g2, y + subSz * 0.52); nsdw()
+    }
+    y += subSz * 1.55
   })
 
+  // Route in opposite corner
   if (integratedRoute.value && pts.length > 1) {
-    const ROUTE_SZ  = Math.round(W * (isPortrait ? 0.18 : 0.12))
+    const ROUTE_SZ  = Math.round(REF * (isPortrait ? 0.18 : 0.14))
     const rx = MARGIN, ry = atBottom ? MARGIN : H - ROUTE_SZ - MARGIN
     ctx.save()
     ctx.beginPath(); ctx.arc(rx + ROUTE_SZ/2, ry + ROUTE_SZ/2, ROUTE_SZ/2, 0, Math.PI*2)
-    ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fill(); ctx.clip()
-    drawRoute(ctx, pts, rx, ry, ROUTE_SZ, ROUTE_SZ, accent, { routeHalo: 'rgba(0,0,0,0.5)', isNeon: false, sparkBacking: false })
+    ctx.fillStyle = 'rgba(0,0,0,0.28)'; ctx.fill(); ctx.clip()
+    drawRoute(ctx, pts, rx, ry, ROUTE_SZ, ROUTE_SZ, accent, { routeHalo: 'rgba(0,0,0,0.45)', isNeon: false, sparkBacking: false })
     ctx.restore()
   }
 }
@@ -1178,9 +1216,6 @@ function drawIntMinimal(ctx, W, H, pts, stats, accent, ar, ag, ab, atBottom) {
     grad.addColorStop(1,    'rgba(0,0,0,0)')
   }
   ctx.fillStyle = grad; ctx.fillRect(0, zoneY, W, totalH)
-  ctx.fillStyle = accent; ctx.globalAlpha = 0.6
-  ctx.fillRect(0, atBottom ? zoneY : zoneY + totalH - 2, W, 2)
-  ctx.globalAlpha = 1
 
   let y = zoneY + PAD
   ctx.font = `700 ${nameSz}px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,0.72)'
@@ -1256,9 +1291,6 @@ function drawIntStrip(ctx, W, H, pts, stats, accent, ar, ag, ab, atBottom) {
     grad.addColorStop(0, 'rgba(0,0,0,0.88)'); grad.addColorStop(1, 'rgba(0,0,0,0.60)')
   }
   ctx.fillStyle = grad; ctx.fillRect(0, stripY, W, STRIP_H)
-  ctx.fillStyle = accent; ctx.globalAlpha = 0.70
-  ctx.fillRect(0, atBottom ? stripY : stripY + STRIP_H - 2, W, 2)
-  ctx.globalAlpha = 1
 
   const cy     = stripY + STRIP_H / 2
   const valSz  = Math.round(STRIP_H * 0.28), lblSz = Math.round(valSz * 0.50)
@@ -1362,6 +1394,19 @@ function render(ctx, pts, stats, name, accent, W, H, orient, format) {
     renderStrava(ctx, pts, stats, name, accent, W, H, orient, theme)
     return
   }
+  if (format === 'glow') {
+    renderGlow(ctx, pts, stats, name, accent, W, H, orient, theme)
+    return
+  }
+  if (format === 'stats') {
+    drawStatsPanel(ctx, pts, stats, name, accent, ar, ag, ab, W, H, theme)
+    drawFooter(ctx, W, H)
+    return
+  }
+  if (format === 'film') {
+    drawFilmComposition(ctx, pts, stats, name, accent, ar, ag, ab, W, H, theme, false)
+    return
+  }
   renderFull(ctx, pts, stats, name, accent, W, H, orient, theme, ar, ag, ab)
 }
 
@@ -1445,12 +1490,65 @@ function buildTheme(format, W, H, ctx, accent, ar, ag, ab) {
         routeHalo:   'rgba(0,0,0,0.4)',
       }
 
-    case 'strava':
+    case 'strava': {
+      ctx.save(); rrect(ctx, 0, 0, W, H, 20)
+      ctx.fillStyle = '#0d0d0d'; ctx.fill()
+      const sg = ctx.createLinearGradient(0, H * 0.35, 0, H)
+      sg.addColorStop(0, 'rgba(0,0,0,0)'); sg.addColorStop(1, 'rgba(0,0,0,0.45)')
+      ctx.fillStyle = sg; ctx.fillRect(0, 0, W, H); ctx.restore()
       return {
         textPrimary: '#fff',
         acDim:       `rgba(${ar},${ag},${ab},1)`,
         statLabel:   'rgba(255,255,255,0.55)',
         shadowColor: 'rgba(0,0,0,0.9)',
+      }
+    }
+
+    case 'glow': {
+      ctx.save(); rrect(ctx, 0, 0, W, H, 20)
+      const glowBg = ctx.createRadialGradient(W / 2, H * 0.38, 0, W / 2, H * 0.38, W * 0.85)
+      glowBg.addColorStop(0, `rgba(${(ar * 0.16) | 0},${(ag * 0.10) | 0},${(ab * 0.06) | 0},1)`)
+      glowBg.addColorStop(1, '#060504')
+      ctx.fillStyle = glowBg; ctx.fill(); ctx.restore()
+      return {
+        textPrimary: '#fff',
+        acDim:       `rgba(${ar},${ag},${ab},0.88)`,
+        statLabel:   `rgba(${ar},${ag},${ab},0.48)`,
+        shadowColor: `rgba(${ar},${ag},${ab},0.75)`,
+        routeHalo:   `rgba(${ar},${ag},${ab},0.12)`,
+        isGlow:      true,
+      }
+    }
+
+    case 'film': {
+      ctx.save(); rrect(ctx, 0, 0, W, H, 20)
+      const filmBg = ctx.createLinearGradient(0, 0, W * 0.4, H)
+      filmBg.addColorStop(0, '#0a0b0e')
+      filmBg.addColorStop(1, '#111318')
+      ctx.fillStyle = filmBg; ctx.fill(); ctx.restore()
+      return {
+        headerColor: 'rgba(255,255,255,0.52)',
+        labelColor:  'rgba(255,255,255,0.38)',
+        valueColor:  '#fff',
+        unitColor:   `rgba(${ar},${ag},${ab},0.88)`,
+        divider:     'rgba(255,255,255,0.10)',
+        shadowColor: 'rgba(0,0,0,0.92)',
+        acDim:       `rgba(${ar},${ag},${ab},0.80)`,
+      }
+    }
+
+    case 'stats':
+      ctx.save(); rrect(ctx, 0, 0, W, H, 20)
+      ctx.fillStyle = '#0d0e11'; ctx.fill(); ctx.restore()
+      return {
+        cardBg:      'transparent',
+        cardBorder:  'transparent',
+        headerColor: 'rgba(255,255,255,0.42)',
+        labelColor:  'rgba(255,255,255,0.38)',
+        valueColor:  '#fff',
+        unitColor:   `rgba(${ar},${ag},${ab},0.85)`,
+        divider:     'rgba(255,255,255,0.07)',
+        shadowColor: 'rgba(0,0,0,0.90)',
       }
 
     default: // classic — transparent bg
@@ -1471,46 +1569,59 @@ function buildTheme(format, W, H, ctx, accent, ar, ag, ab) {
 // ── Full layout (all formats except minimal) ──────────────────────────────────
 
 function renderFull(ctx, pts, stats, name, accent, W, H, orient, theme, ar, ag, ab) {
-  const PAD = 20
-  const HDR = orient === 'portrait' ? 68 : 60
-  const { textPrimary, acDim, headerBg, statsBg, divider, shadowColor } = theme
+  // REF = shorter canvas dimension — all sizes scale from this so backdrop mode looks good
+  const isLS = orient === 'landscape'
+  const REF  = Math.min(W, H)
 
+  const PAD     = Math.round(REF * 0.042)
+  const HDR     = Math.round(REF * 0.142)
+  const nameSz  = Math.round(REF * 0.033)
+  const dateSz  = Math.round(REF * 0.023)
+  const badgeSz = Math.round(REF * 0.054)
+  const valSz   = Math.round(REF * 0.038)
+  const unitSz  = Math.round(REF * 0.021)
+  const lblSz   = Math.round(REF * 0.019)
+
+  const { textPrimary, acDim, headerBg, statsBg, divider, shadowColor } = theme
   const shadow   = (b = 8) => { ctx.shadowColor = shadowColor; ctx.shadowBlur = b }
   const noShadow = ()      => { ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0 }
 
   // Header backdrop
-  rrect(ctx, 0, 0, W, HDR, 16); ctx.fillStyle = headerBg; ctx.fill()
-  ctx.fillStyle = accent; ctx.fillRect(0, 8, 3, HDR - 16)
+  rrect(ctx, 0, 0, W, HDR, Math.round(REF * 0.033))
+  ctx.fillStyle = headerBg; ctx.fill()
+  ctx.fillStyle = accent
+  ctx.fillRect(0, Math.round(HDR * 0.12), Math.round(REF * 0.006), Math.round(HDR * 0.76))
 
   // Track name
   ctx.save()
-  ctx.font = `700 ${orient === 'portrait' ? 16 : 14}px ${FONT}`
+  ctx.font = `700 ${nameSz}px ${FONT}`
   ctx.fillStyle = textPrimary; ctx.textAlign = 'left'; ctx.textBaseline = 'top'
   shadow(10)
   let nameStr = name || 'Activity'
-  const maxNW = W - PAD * 2 - 90
+  const maxNW = W - PAD * 2 - Math.round(REF * 0.19)
   while (ctx.measureText(nameStr).width > maxNW && nameStr.length > 3) nameStr = nameStr.slice(0, -1)
   if (nameStr !== (name || 'Activity')) nameStr += '…'
-  ctx.fillText(nameStr, PAD + 8, 10); noShadow(); ctx.restore()
+  ctx.fillText(nameStr, PAD + Math.round(REF * 0.017), Math.round(HDR * 0.13))
+  noShadow(); ctx.restore()
 
   // Date
   const startPt = pts.find(p => p.time)
   if (startPt?.time) {
-    ctx.font = `500 11px ${FONT}`; ctx.fillStyle = acDim
+    ctx.font = `500 ${dateSz}px ${FONT}`; ctx.fillStyle = acDim
     ctx.textAlign = 'left'; ctx.textBaseline = 'top'; shadow(6)
     ctx.fillText(
       startPt.time.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }),
-      PAD + 8, orient === 'portrait' ? 33 : 30,
+      PAD + Math.round(REF * 0.017), Math.round(HDR * 0.54),
     ); noShadow()
   }
 
   // Distance badge
   const distKm = (stats?.totalDist ?? 0).toFixed(2)
   ctx.textAlign = 'right'; ctx.textBaseline = 'alphabetic'; shadow(10)
-  ctx.font = `700 ${orient === 'portrait' ? 26 : 22}px ${FONT}`; ctx.fillStyle = accent
-  ctx.fillText(distKm, W - PAD, HDR / 2 + (orient === 'portrait' ? 10 : 8))
-  ctx.font = `600 11px ${FONT}`; ctx.fillStyle = acDim
-  ctx.fillText('km', W - PAD, HDR / 2 + (orient === 'portrait' ? 24 : 20)); noShadow()
+  ctx.font = `700 ${badgeSz}px ${FONT}`; ctx.fillStyle = accent
+  ctx.fillText(distKm, W - PAD, Math.round(HDR * 0.60))
+  ctx.font = `600 ${dateSz}px ${FONT}`; ctx.fillStyle = acDim
+  ctx.fillText('km', W - PAD, Math.round(HDR * 0.88)); noShadow()
 
   // Grid data
   const movingMs = computeMovingTime(pts)
@@ -1523,34 +1634,37 @@ function renderFull(ctx, pts, stats, name, accent, W, H, orient, theme, ar, ag, 
     { v: String(stats?.elevLoss ?? 0),        u: 'm',    l: 'ELEV LOSS'   },
   ]
 
-  if (orient === 'landscape') {
-    const CY = HDR + 6, CH_MAP = H - CY - 8
-    const SPLIT = Math.floor(W / 2) - 4
+  if (isLS) {
+    const CY = HDR + Math.round(REF * 0.015), CH_MAP = H - CY - Math.round(REF * 0.020)
+    const SPLIT = Math.floor(W / 2) - Math.round(REF * 0.010)
     drawRoute(ctx, pts, PAD, CY, SPLIT - PAD, CH_MAP, accent, theme)
     drawElevSparkline(ctx, pts, PAD, CY, SPLIT - PAD, CH_MAP, accent, { r: ar, g: ag, b: ab }, theme)
 
-    const SX = SPLIT + 8, SW = W - SPLIT - 8 - PAD
+    const SX = SPLIT + Math.round(REF * 0.020), SW = W - SPLIT - Math.round(REF * 0.020) - PAD
     const COL_W = SW / 2, ROW_H = CH_MAP / 3
-    rrect(ctx, SX - 4, CY, SW + 4, CH_MAP, 14); ctx.fillStyle = statsBg; ctx.fill()
+    rrect(ctx, SX - Math.round(REF * 0.010), CY, SW + Math.round(REF * 0.010), CH_MAP, Math.round(REF * 0.029))
+    ctx.fillStyle = statsBg; ctx.fill()
     drawGridDividers(ctx, SX, CY, SW, CH_MAP, 2, 3, divider)
     grid6.forEach((s, i) => drawStatCell(ctx, s,
       SX + (i % 2) * COL_W + COL_W / 2,
       CY + Math.floor(i / 2) * ROW_H + ROW_H / 2,
-      theme))
+      theme, valSz, unitSz, lblSz))
 
   } else {
-    const MAP_Y = HDR + 6, MAP_H = orient === 'portrait' ? 290 : 230
+    const MAP_Y = HDR + Math.round(REF * 0.013)
+    const MAP_H = Math.round(H * 0.483)
     drawRoute(ctx, pts, PAD, MAP_Y, W - PAD * 2, MAP_H, accent, theme)
     drawElevSparkline(ctx, pts, PAD, MAP_Y, W - PAD * 2, MAP_H, accent, { r: ar, g: ag, b: ab }, theme)
 
-    const ST_Y = MAP_Y + MAP_H + 6, ST_H = H - ST_Y - 8
+    const ST_Y = MAP_Y + MAP_H + Math.round(REF * 0.013), ST_H = H - ST_Y - Math.round(REF * 0.017)
     const COL_W = (W - PAD * 2) / 3, ROW_H = ST_H / 2
-    rrect(ctx, 0, ST_Y, W, ST_H + 8, 14); ctx.fillStyle = statsBg; ctx.fill()
+    rrect(ctx, 0, ST_Y, W, ST_H + Math.round(REF * 0.017), Math.round(REF * 0.029))
+    ctx.fillStyle = statsBg; ctx.fill()
     drawGridDividers(ctx, PAD, ST_Y, W - PAD * 2, ST_H, 3, 2, divider)
     grid6.forEach((s, i) => drawStatCell(ctx, s,
       PAD + (i % 3) * COL_W + COL_W / 2,
       ST_Y + Math.floor(i / 3) * ROW_H + ROW_H / 2,
-      theme))
+      theme, valSz, unitSz, lblSz))
   }
 
   drawFooter(ctx, W, H)
@@ -1563,6 +1677,7 @@ function renderMinimal(ctx, pts, stats, name, accent, W, H, orient, theme) {
   const shadow   = (b = 8) => { ctx.shadowColor = shadowColor; ctx.shadowBlur = b }
   const noShadow = ()      => { ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0 }
 
+  const REF    = Math.min(W, H)
   const distKm = (stats?.totalDist ?? 0).toFixed(2)
   const stats3 = [
     { v: distKm,                          u: 'km', l: 'DISTANCE'  },
@@ -1571,53 +1686,63 @@ function renderMinimal(ctx, pts, stats, name, accent, W, H, orient, theme) {
   ]
 
   if (orient === 'landscape') {
-    const PAD = 16, ROUTE_W = Math.floor(W * 0.58)
+    const PAD     = Math.round(REF * 0.040)
+    const ROUTE_W = Math.floor(W * 0.58)
     drawRoute(ctx, pts, PAD, PAD, ROUTE_W - PAD, H - PAD * 2, accent, theme)
 
-    const SX = ROUTE_W + 12, SW = W - SX - PAD
-    const ROW_H = H / 3
+    const SX     = ROUTE_W + Math.round(REF * 0.030), SW = W - SX - PAD
+    const ROW_H  = H / 3
+    const valSz  = Math.round(REF * 0.070)
+    const unitSz = Math.round(valSz * 0.43)
+    const lblSz  = Math.round(REF * 0.023)
+
     stats3.forEach((s, i) => {
       const cy = i * ROW_H + ROW_H / 2
       shadow(10)
-      ctx.font = `700 28px ${FONT}`; ctx.fillStyle = textPrimary
+      ctx.font = `700 ${valSz}px ${FONT}`; ctx.fillStyle = textPrimary
       ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
-      ctx.fillText(s.v, SX + SW / 2, cy + 4); noShadow()
+      ctx.fillText(s.v, SX + SW / 2, cy + Math.round(valSz * 0.14)); noShadow()
       if (s.u) {
         const vw = ctx.measureText(s.v).width
-        ctx.font = `600 12px ${FONT}`; ctx.fillStyle = acDim
+        ctx.font = `600 ${unitSz}px ${FONT}`; ctx.fillStyle = acDim
         ctx.textAlign = 'left'; ctx.textBaseline = 'bottom'
-        ctx.fillText(s.u, SX + SW / 2 + vw / 2 + 3, cy)
+        ctx.fillText(s.u, SX + SW / 2 + vw / 2 + Math.round(unitSz * 0.3), cy)
       }
-      ctx.font = `700 9px ${FONT}`; ctx.fillStyle = statLabel
+      ctx.font = `700 ${lblSz}px ${FONT}`; ctx.fillStyle = statLabel
       ctx.textAlign = 'center'; ctx.textBaseline = 'top'
-      ctx.fillText(s.l, SX + SW / 2, cy + 7)
+      ctx.fillText(s.l, SX + SW / 2, cy + Math.round(valSz * 0.18))
     })
 
   } else {
-    const PAD = 16, STAT_H = 56
-    const MAP_H = H - PAD - STAT_H - 8
+    const PAD    = Math.round(REF * 0.033)
+    const valSz  = Math.round(REF * 0.046)
+    const unitSz = Math.round(valSz * 0.45)
+    const lblSz  = Math.round(REF * 0.017)
+    const nameSz = Math.round(REF * 0.023)
+    const STAT_H = Math.round(REF * 0.117)
+    const MAP_H  = H - PAD - STAT_H - Math.round(REF * 0.017)
     drawRoute(ctx, pts, PAD, PAD, W - PAD * 2, MAP_H, accent, theme)
 
     // Track name
-    shadow(8); ctx.font = `600 11px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,0.55)'
+    shadow(8); ctx.font = `600 ${nameSz}px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,0.55)'
     ctx.textAlign = 'left'; ctx.textBaseline = 'top'
-    ctx.fillText(name || 'Activity', PAD + 4, PAD + 4); noShadow()
+    ctx.fillText(name || 'Activity', PAD + Math.round(REF * 0.008), PAD + Math.round(REF * 0.008)); noShadow()
 
-    const COL_W = (W - PAD * 2) / 3, CY = H - STAT_H / 2 - 6
+    const COL_W = (W - PAD * 2) / 3, CY = H - STAT_H / 2 - Math.round(REF * 0.013)
     stats3.forEach((s, i) => {
       const cx = PAD + i * COL_W + COL_W / 2
-      shadow(10); ctx.font = `700 22px ${FONT}`; ctx.fillStyle = textPrimary
+      shadow(10); ctx.font = `700 ${valSz}px ${FONT}`; ctx.fillStyle = textPrimary
       ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
-      ctx.fillText(s.v, cx, CY + 2); noShadow()
+      ctx.fillText(s.v, cx, CY + Math.round(valSz * 0.09)); noShadow()
       if (s.u) {
         const vw = ctx.measureText(s.v).width
-        ctx.font = `600 10px ${FONT}`; ctx.fillStyle = acDim
+        ctx.font = `600 ${unitSz}px ${FONT}`; ctx.fillStyle = acDim
         ctx.textAlign = 'left'; ctx.textBaseline = 'bottom'
-        ctx.fillText(s.u, cx + vw / 2 + 2, CY - 1)
+        ctx.fillText(s.u, cx + vw / 2 + Math.round(unitSz * 0.2), CY - Math.round(unitSz * 0.1))
       }
-      ctx.font = `700 8px ${FONT}`; ctx.fillStyle = statLabel
+      ctx.font = `700 ${lblSz}px ${FONT}`; ctx.fillStyle = statLabel
       ctx.textAlign = 'center'; ctx.textBaseline = 'top'
-      ctx.fillText(s.l, cx, CY + 5)
+      ctx.fillText(s.l, cx, CY + Math.round(valSz * 0.10))
     })
   }
 
@@ -1631,81 +1756,224 @@ function renderStrava(ctx, pts, stats, name, accent, W, H, orient, theme) {
   const shadow   = (b = 10) => { ctx.shadowColor = shadowColor; ctx.shadowBlur = b }
   const noShadow = ()       => { ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0 }
 
-  const PAD    = orient === 'landscape' ? 18 : 22
-  const isLS   = orient === 'landscape'
-  const valSz  = isLS ? 28 : 34
-  const unitSz = Math.round(valSz * 0.38)
-  const lblSz  = isLS ? 10 : 11
+  const isLS = orient === 'landscape'
+  const REF  = Math.min(W, H)
+  const PAD  = Math.round(REF * (isLS ? 0.052 : 0.056))
+
+  const movingMs = computeMovingTime(pts)
+  const fmtTime  = fmtHM(movingMs || (stats?.totalTime ?? 0))
+  const elevGain = String(stats?.elevGain ?? 0)
+  const distKm   = (stats?.totalDist ?? 0).toFixed(2)
+
+  const nameSz = Math.round(REF * (isLS ? 0.054 : 0.058))
+  const valSz  = Math.round(REF * (isLS ? 0.068 : 0.073))
+  const unitSz = Math.round(valSz * 0.42)
+  const lblSz  = Math.round(valSz * 0.36)
+  const iconSz = Math.round(nameSz * 0.90)
+
+  // Position content toward the bottom
+  const contentH = iconSz * 1.55 + nameSz * 1.72 + lblSz * 1.55 + valSz * 1.6 + lblSz * 1.55 + valSz * 1.2
+  let y = Math.max(PAD, H - contentH - PAD * 2)
+
+  // Cycling icon + STRAVA text
+  drawCyclingIcon(ctx, PAD, y, iconSz, '#fff')
+  ctx.font = `800 ${Math.round(iconSz * 0.85)}px ${FONT}`
+  ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
+  shadow(12); ctx.fillText('STRAVA', PAD + iconSz + Math.round(iconSz * 0.42), y + iconSz / 2); noShadow()
+  y += iconSz * 1.55
 
   // Activity name
-  const nameSz = isLS ? 18 : 22
-  const maxNW  = W - PAD * 2
   ctx.font = `800 ${nameSz}px ${FONT}`
   let nameStr = name || 'Activity'
-  while (ctx.measureText(nameStr).width > maxNW && nameStr.length > 3) nameStr = nameStr.slice(0, -1)
+  while (ctx.measureText(nameStr).width > W - PAD * 2 && nameStr.length > 3) nameStr = nameStr.slice(0, -1)
   if (nameStr !== (name || 'Activity')) nameStr += '…'
-
   ctx.fillStyle = textPrimary; ctx.textAlign = 'left'; ctx.textBaseline = 'top'
-  shadow(14); ctx.fillText(nameStr, PAD, PAD); noShadow()
+  shadow(16); ctx.fillText(nameStr, PAD, y); noShadow()
+  y += nameSz * 1.72
 
-  // Thin accent underline beneath name
-  const nameH = nameSz * 1.3
-  const lineW = Math.min(ctx.measureText(nameStr).width, maxNW)
-  ctx.fillStyle = accent; ctx.globalAlpha = 0.7
-  ctx.fillRect(PAD, PAD + nameH + 3, lineW, 2)
-  ctx.globalAlpha = 1
+  const colW = (W - PAD * 2) / 2
 
-  // Stats grid
-  const movingMs = computeMovingTime(pts)
-  const grid = [
-    { v: (stats?.totalDist ?? 0).toFixed(2),  u: 'km',   l: 'Distance'      },
-    { v: String(stats?.elevGain ?? 0),          u: 'm',    l: 'Elevation Gain' },
-    { v: fmtHMS(movingMs),                     u: '',     l: 'Moving Time'   },
-    { v: (stats?.avgSpeed ?? 0).toFixed(1),    u: 'km/h', l: 'Avg Speed'     },
-    { v: String(stats?.elevLoss ?? 0),          u: 'm',    l: 'Elev Loss'     },
-    { v: (stats?.maxSpeed ?? 0).toFixed(1),    u: 'km/h', l: 'Max Speed'     },
-  ]
+  // Labels: Elev Gain | Time
+  ctx.font = `500 ${lblSz}px ${FONT}`
+  ctx.fillStyle = statLabel; ctx.textAlign = 'left'; ctx.textBaseline = 'top'
+  shadow(4); ctx.fillText('Elev Gain', PAD, y); ctx.fillText('Time', PAD + colW, y); noShadow()
+  y += lblSz * 1.55
 
-  const COLS   = isLS ? 3 : 2
-  const gridW  = W - PAD * 2
-  const cw     = gridW / COLS
-  const gridTop = PAD + nameH + 14
-  const gridH  = H - gridTop - PAD - 18
-  const rh     = gridH / Math.ceil(grid.length / COLS)
+  // Values: elevation | time
+  ctx.font = `800 ${valSz}px ${FONT}`
+  const elevW = ctx.measureText(elevGain).width
+  ctx.fillStyle = textPrimary; ctx.textAlign = 'left'; ctx.textBaseline = 'top'
+  shadow(14); ctx.fillText(elevGain, PAD, y); noShadow()
+  ctx.font = `600 ${unitSz}px ${FONT}`; ctx.fillStyle = acDim
+  shadow(8); ctx.fillText('m', PAD + elevW + Math.round(valSz * 0.08), y + valSz * 0.55); noShadow()
 
-  grid.forEach((s, i) => {
-    const col = i % COLS
-    const row = Math.floor(i / COLS)
-    const cx  = PAD + col * cw + cw / 2
-    const cy  = gridTop + row * rh + rh / 2
+  ctx.font = `800 ${valSz}px ${FONT}`; ctx.fillStyle = textPrimary; ctx.textAlign = 'left'; ctx.textBaseline = 'top'
+  shadow(14); ctx.fillText(fmtTime, PAD + colW, y); noShadow()
+  y += valSz * 1.6
 
-    // Label above
-    ctx.font = `600 ${lblSz}px ${FONT}`
-    ctx.fillStyle = statLabel; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
-    shadow(6); ctx.fillText(s.l, cx, cy - 2); noShadow()
+  // Distance label
+  ctx.font = `500 ${lblSz}px ${FONT}`; ctx.fillStyle = statLabel; ctx.textAlign = 'left'; ctx.textBaseline = 'top'
+  shadow(4); ctx.fillText('Distance', PAD, y); noShadow()
+  y += lblSz * 1.55
 
-    // Measure value width with val font before drawing
-    ctx.font = `800 ${valSz}px ${FONT}`
-    const vw = ctx.measureText(s.v).width
-    ctx.font = `600 ${unitSz}px ${FONT}`
-    const uw = s.u ? ctx.measureText(s.u).width : 0
-    const totalW = vw + (uw ? uw + 3 : 0)
-    const startX = cx - totalW / 2
-
-    // Value
-    ctx.font = `800 ${valSz}px ${FONT}`
-    ctx.fillStyle = textPrimary; ctx.textAlign = 'left'; ctx.textBaseline = 'top'
-    shadow(12); ctx.fillText(s.v, startX, cy + 1); noShadow()
-
-    // Unit superscript
-    if (s.u) {
-      ctx.font = `600 ${unitSz}px ${FONT}`
-      ctx.fillStyle = acDim; ctx.textAlign = 'left'; ctx.textBaseline = 'top'
-      shadow(8); ctx.fillText(s.u, startX + vw + 3, cy + valSz * 0.55); noShadow()
-    }
-  })
+  // Distance value
+  ctx.font = `800 ${valSz}px ${FONT}`
+  const distW = ctx.measureText(distKm).width
+  ctx.fillStyle = textPrimary; ctx.textAlign = 'left'; ctx.textBaseline = 'top'
+  shadow(14); ctx.fillText(distKm, PAD, y); noShadow()
+  ctx.font = `600 ${unitSz}px ${FONT}`; ctx.fillStyle = acDim
+  shadow(8); ctx.fillText('km', PAD + distW + Math.round(valSz * 0.08), y + valSz * 0.55); noShadow()
 
   drawFooter(ctx, W, H)
+}
+
+// ── Glow layout — dark warm bg, stacked stats + single-color glowing route ────
+
+function renderGlow(ctx, pts, stats, name, accent, W, H, orient, theme) {
+  const { r: ar, g: ag, b: ab } = hexRgb(accent)
+  const isLS = orient === 'landscape'
+  const PAD  = Math.round(W * 0.075)
+
+  const movingMs = computeMovingTime(pts)
+  const rows = [
+    { l: 'Distance',  v: (stats?.totalDist ?? 0).toFixed(2), u: 'km' },
+    { l: 'Elev Gain', v: String(stats?.elevGain ?? 0),        u: 'm'  },
+    { l: 'Time',      v: fmtHMS(movingMs || (stats?.totalTime ?? 0)), u: '' },
+  ]
+
+  const glowFn   = (b) => { ctx.shadowColor = `rgba(${ar},${ag},${ab},0.85)`; ctx.shadowBlur = b }
+  const noShadow = ()  => { ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0 }
+  const accentFull = `rgba(${ar},${ag},${ab},1)`
+  const accentDim  = `rgba(${ar},${ag},${ab},0.48)`
+
+  if (isLS) {
+    // Stats on left half, route on right half
+    const STATS_W = Math.round(W * 0.5)
+    const rowH    = H / rows.length
+    const valSz   = Math.round(Math.min(rowH * 0.50, STATS_W * 0.22))
+    const unitSz  = Math.round(valSz * 0.38)
+    const lblSz   = Math.round(valSz * 0.32)
+
+    rows.forEach((s, i) => {
+      const cy = i * rowH + rowH / 2
+
+      ctx.font = `500 ${lblSz}px ${FONT}`
+      ctx.fillStyle = accentDim; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom'
+      glowFn(5); ctx.fillText(s.l.toUpperCase(), PAD, cy - 2); noShadow()
+
+      ctx.font = `800 ${valSz}px ${FONT}`
+      const vw = ctx.measureText(s.v).width
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'
+      glowFn(26); ctx.fillText(s.v, PAD, cy + 2); noShadow()
+
+      if (s.u) {
+        ctx.font = `600 ${unitSz}px ${FONT}`
+        ctx.fillStyle = accentFull; glowFn(14)
+        ctx.fillText(s.u, PAD + vw + Math.round(valSz * 0.08), cy + valSz * 0.56)
+        noShadow()
+      }
+
+      if (i < rows.length - 1) {
+        ctx.fillStyle = `rgba(${ar},${ag},${ab},0.10)`
+        ctx.fillRect(PAD, (i + 1) * rowH - 1, STATS_W - PAD * 2, 1)
+      }
+    })
+
+    if (pts.length > 1) {
+      drawGlowRoute(ctx, pts, STATS_W, 10, W - STATS_W - PAD * 0.5, H - 20, accent, ar, ag, ab)
+    }
+
+  } else {
+    // Portrait: stats top ~58%, route bottom ~42%
+    const ROUTE_FRAC = 0.42
+    const STATS_H    = Math.round(H * (1 - ROUTE_FRAC))
+    const ROUTE_Y    = STATS_H
+    const ROUTE_H    = H - ROUTE_Y
+    const rowH       = STATS_H / rows.length
+    const valSz      = Math.round(Math.min(rowH * 0.52, W * 0.185))
+    const unitSz     = Math.round(valSz * 0.38)
+    const lblSz      = Math.round(valSz * 0.30)
+
+    rows.forEach((s, i) => {
+      const rowTop = i * rowH
+      const cy     = rowTop + rowH / 2
+
+      ctx.font = `500 ${lblSz}px ${FONT}`
+      ctx.fillStyle = accentDim; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom'
+      glowFn(5); ctx.fillText(s.l.toUpperCase(), PAD, cy); noShadow()
+
+      ctx.font = `800 ${valSz}px ${FONT}`
+      const vw = ctx.measureText(s.v).width
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'
+      glowFn(30); ctx.fillText(s.v, PAD, cy + 2); noShadow()
+
+      if (s.u) {
+        ctx.font = `600 ${unitSz}px ${FONT}`
+        ctx.fillStyle = accentFull; glowFn(16)
+        ctx.fillText(s.u, PAD + vw + Math.round(valSz * 0.08), cy + valSz * 0.56)
+        noShadow()
+      }
+
+      if (i < rows.length - 1) {
+        ctx.fillStyle = `rgba(${ar},${ag},${ab},0.10)`
+        ctx.fillRect(PAD, rowTop + rowH - 1, W - PAD * 2, 1)
+      }
+    })
+
+    if (pts.length > 1) {
+      drawGlowRoute(ctx, pts, PAD * 0.5, ROUTE_Y, W - PAD, ROUTE_H - 24, accent, ar, ag, ab)
+    }
+  }
+
+  drawFooter(ctx, W, H)
+}
+
+function drawGlowRoute(ctx, pts, mx, my, mw, mh, accent, ar, ag, ab) {
+  const lats   = pts.map(p => p.lat), lons = pts.map(p => p.lon)
+  const latMin = Math.min(...lats), latMax = Math.max(...lats)
+  const lonMin = Math.min(...lons), lonMax = Math.max(...lons)
+  const latR   = (latMax - latMin) || 0.001, lonR = (lonMax - lonMin) || 0.001
+  const latMid = ((latMin + latMax) / 2) * Math.PI / 180
+  const aspect  = (lonR * Math.cos(latMid)) / latR
+
+  const mp = 14, avW = mw - 2 * mp, avH = mh - 2 * mp
+  let fw = avW, fh = avH
+  if (aspect > avW / avH) fh = avW / aspect; else fw = avH * aspect
+
+  const offX = mx + mp + (avW - fw) / 2, offY = my + mp + (avH - fh) / 2
+  const toXY = (lat, lon) => [
+    offX + ((lon - lonMin) / lonR) * fw,
+    offY + fh - ((lat - latMin) / latR) * fh,
+  ]
+
+  const buildPath = () => {
+    ctx.beginPath()
+    pts.forEach((p, i) => { const [x, y] = toXY(p.lat, p.lon); i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y) })
+  }
+
+  // Wide outer halo
+  buildPath()
+  ctx.save()
+  ctx.shadowColor = `rgba(${ar},${ag},${ab},0.55)`; ctx.shadowBlur = 32
+  ctx.strokeStyle = `rgba(${ar},${ag},${ab},0.10)`
+  ctx.lineWidth = 18; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.stroke()
+  ctx.restore()
+
+  // Mid glow
+  buildPath()
+  ctx.save()
+  ctx.shadowColor = `rgba(${ar},${ag},${ab},0.90)`; ctx.shadowBlur = 14
+  ctx.strokeStyle = `rgba(${ar},${ag},${ab},0.40)`
+  ctx.lineWidth = 6; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.stroke()
+  ctx.restore()
+
+  // Crisp core
+  buildPath()
+  ctx.save()
+  ctx.shadowColor = `rgba(${ar},${ag},${ab},1)`; ctx.shadowBlur = 5
+  ctx.strokeStyle = `rgba(${ar},${ag},${ab},1)`
+  ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.stroke()
+  ctx.restore()
 }
 
 // ── Drawing primitives ────────────────────────────────────────────────────────
@@ -1822,38 +2090,649 @@ function drawGridDividers(ctx, x, y, w, h, cols, rows, color) {
   }
 }
 
-function drawStatCell(ctx, s, cx, cy, theme) {
+function drawStatCell(ctx, s, cx, cy, theme, valSz = 18, unitSz = 10, lblSz = 9) {
   const { textPrimary, acDim, statLabel, shadowColor } = theme
   const shadow   = (b = 6) => { ctx.shadowColor = shadowColor; ctx.shadowBlur = b }
   const noShadow = ()      => { ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0 }
 
   shadow()
-  ctx.font = `700 18px ${FONT}`; ctx.fillStyle = textPrimary
+  ctx.font = `700 ${valSz}px ${FONT}`; ctx.fillStyle = textPrimary
   ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
-  ctx.fillText(s.v, cx, cy + 1); noShadow()
+  ctx.fillText(s.v, cx, cy + Math.round(valSz * 0.06)); noShadow()
 
   if (s.u) {
     const vw = ctx.measureText(s.v).width
-    ctx.font = `600 10px ${FONT}`; ctx.fillStyle = acDim
+    ctx.font = `600 ${unitSz}px ${FONT}`; ctx.fillStyle = acDim
     ctx.textAlign = 'left'; ctx.textBaseline = 'bottom'
-    ctx.fillText(s.u, cx + vw / 2 + 3, cy - 1)
+    ctx.fillText(s.u, cx + vw / 2 + Math.round(unitSz * 0.3), cy - Math.round(unitSz * 0.1))
   }
 
-  ctx.font = `600 9px ${FONT}`; ctx.fillStyle = statLabel
+  ctx.font = `600 ${lblSz}px ${FONT}`; ctx.fillStyle = statLabel
   ctx.textAlign = 'center'; ctx.textBaseline = 'top'
-  ctx.fillText(s.l, cx, cy + 5)
+  ctx.fillText(s.l, cx, cy + Math.round(lblSz * 0.6))
+}
+
+function drawCyclingIcon(ctx, x, y, size, color) {
+  ctx.save()
+  ctx.strokeStyle = color; ctx.fillStyle = color
+  ctx.lineWidth = Math.max(1.2, size * 0.072)
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round'
+
+  const wr  = size * 0.26
+  const wcy = y + size * 0.69
+  const lwx = x + size * 0.22
+  const rwx = x + size * 0.78
+
+  ctx.beginPath(); ctx.arc(lwx, wcy, wr, 0, Math.PI * 2); ctx.stroke()
+  ctx.beginPath(); ctx.arc(rwx, wcy, wr, 0, Math.PI * 2); ctx.stroke()
+
+  const bbx = lwx + size * 0.18, bby = wcy
+  const stx = lwx + size * 0.12, sty = y + size * 0.27
+  const htx = rwx, hty = y + size * 0.31
+
+  // Rear triangle
+  ctx.beginPath(); ctx.moveTo(lwx, wcy); ctx.lineTo(stx, sty); ctx.lineTo(bbx, bby); ctx.closePath(); ctx.stroke()
+  // Top tube + down tube
+  ctx.beginPath(); ctx.moveTo(stx, sty); ctx.lineTo(htx, hty); ctx.lineTo(bbx, bby); ctx.stroke()
+  // Fork
+  ctx.beginPath(); ctx.moveTo(htx, hty); ctx.lineTo(rwx, wcy); ctx.stroke()
+  // Handlebar
+  ctx.beginPath(); ctx.moveTo(htx - size*0.05, hty - size*0.02); ctx.lineTo(htx + size*0.09, hty - size*0.02); ctx.stroke()
+  // Seat post + saddle
+  ctx.beginPath(); ctx.moveTo(stx, sty); ctx.lineTo(stx, sty - size*0.07); ctx.stroke()
+  ctx.beginPath(); ctx.moveTo(stx - size*0.09, sty - size*0.07); ctx.lineTo(stx + size*0.07, sty - size*0.07); ctx.stroke()
+
+  // Rider: head (filled circle)
+  ctx.beginPath(); ctx.arc(stx + size*0.08, sty - size*0.22, size * 0.09, 0, Math.PI * 2); ctx.fill()
+  // Rider body (leaning toward handlebar)
+  ctx.beginPath(); ctx.moveTo(stx + size*0.08, sty - size*0.13); ctx.lineTo(htx + size*0.02, hty - size*0.03); ctx.stroke()
+
+  ctx.restore()
+}
+
+// ── Film / cinematic overlay ──────────────────────────────────────────────────
+
+function drawHikerIcon(ctx, x, y, size, color) {
+  ctx.save()
+  ctx.strokeStyle = color; ctx.fillStyle = color
+  ctx.lineWidth = Math.max(1.2, size * 0.09); ctx.lineCap = 'round'; ctx.lineJoin = 'round'
+  const cx = x + size / 2
+  ctx.beginPath(); ctx.arc(cx, y + size * 0.12, size * 0.11, 0, Math.PI * 2); ctx.fill()
+  ctx.beginPath(); ctx.moveTo(cx, y + size * 0.23); ctx.lineTo(cx - size * 0.04, y + size * 0.55); ctx.stroke()
+  ctx.beginPath(); ctx.moveTo(cx, y + size * 0.32); ctx.lineTo(cx - size * 0.20, y + size * 0.27); ctx.lineTo(cx - size * 0.28, y + size * 0.46); ctx.stroke()
+  ctx.beginPath(); ctx.moveTo(cx, y + size * 0.32); ctx.lineTo(cx + size * 0.16, y + size * 0.39); ctx.stroke()
+  ctx.beginPath(); ctx.moveTo(cx - size * 0.04, y + size * 0.55); ctx.lineTo(cx - size * 0.17, y + size * 0.77); ctx.lineTo(cx - size * 0.22, y + size * 0.92); ctx.stroke()
+  ctx.beginPath(); ctx.moveTo(cx - size * 0.04, y + size * 0.55); ctx.lineTo(cx + size * 0.11, y + size * 0.75); ctx.lineTo(cx + size * 0.14, y + size * 0.92); ctx.stroke()
+  ctx.restore()
+}
+
+function drawIntFilm(ctx, W, H, pts, stats, accent, ar, ag, ab, atBottom) {
+  const filmTheme = {
+    headerColor: 'rgba(255,255,255,0.52)',
+    labelColor:  'rgba(255,255,255,0.40)',
+    valueColor:  '#fff',
+    unitColor:   `rgba(${ar},${ag},${ab},0.88)`,
+    divider:     'rgba(255,255,255,0.12)',
+    shadowColor: 'rgba(0,0,0,0.92)',
+    acDim:       `rgba(${ar},${ag},${ab},0.80)`,
+  }
+  drawFilmComposition(ctx, pts, stats, props.trackName, accent, ar, ag, ab, W, H, filmTheme, true)
+  drawFooter(ctx, W, H)
+}
+
+function drawFilmComposition(ctx, pts, stats, name, accent, ar, ag, ab, W, H, theme, isPhoto) {
+  const isLS   = W > H * 1.1
+  const REF    = Math.min(W, H)
+  const PAD    = Math.round(REF * 0.050)
+  const RADIUS = Math.round(W * (isLS ? 0.028 : 0.038))
+
+  // Glassmorphism border on standalone sticker
+  if (!isPhoto) {
+    const bG = ctx.createLinearGradient(0, 0, W * 0.5, H)
+    bG.addColorStop(0, 'rgba(255,255,255,0.18)')
+    bG.addColorStop(0.45, 'rgba(255,255,255,0.05)')
+    bG.addColorStop(1, 'rgba(255,255,255,0.12)')
+    rrect(ctx, 1.5, 1.5, W - 3, H - 3, RADIUS)
+    ctx.strokeStyle = bG; ctx.lineWidth = 2; ctx.stroke()
+  }
+
+  // Layout zones
+  const STRIP_H = Math.round(H * (isLS ? 0.215 : 0.260))
+  const CHART_H = H - STRIP_H
+
+  // Right inset card dimensions
+  const INSET_W = Math.round(W * (isLS ? 0.170 : 0.250))
+  const INSET_X = W - INSET_W - Math.round(PAD * 0.55)
+  const INSET_Y = Math.round(PAD * 0.45)
+  const IC_SZ   = Math.round(REF * (isLS ? 0.105 : 0.095))
+  const IC_R    = Math.round(REF * 0.028)
+  const MINI_Y  = INSET_Y + IC_SZ + Math.round(PAD * 0.32)
+  const MINI_H  = CHART_H - MINI_Y - Math.round(PAD * 0.4)
+
+  // ── Header gradient (top-left column area) ────────────────────────────────
+  const CHART_LABEL_W = INSET_X - Math.round(PAD * 0.5)
+  const HDR_H   = Math.round(CHART_H * 0.18)
+  const hGrad   = ctx.createLinearGradient(0, 0, 0, HDR_H * 2.2)
+  hGrad.addColorStop(0, 'rgba(0,0,0,0.72)')
+  hGrad.addColorStop(1, 'rgba(0,0,0,0)')
+  ctx.fillStyle = hGrad; ctx.fillRect(0, 0, CHART_LABEL_W, HDR_H * 2.2)
+
+  // Column headers + values
+  const movingMs  = computeMovingTime(pts)
+  const maxSpd    = pts.length ? Math.max(...pts.map(p => p.speedSmooth ?? 0)) : 0
+  const cols = [
+    { l: 'ELEVATION', v: String(stats?.elevGain ?? 0),             u: 'm'    },
+    { l: 'DISTANCE',  v: (stats?.totalDist ?? 0).toFixed(1),       u: 'km'   },
+    { l: 'AVG SPEED', v: (stats?.avgSpeed ?? 0).toFixed(1),        u: 'km/h' },
+  ]
+  const numCols = isLS ? 3 : 2
+  const dispCols = cols.slice(0, numCols)
+  const colW  = CHART_LABEL_W / dispCols.length
+  const lblSz = Math.round(REF * (isLS ? 0.019 : 0.016))
+  const valSz = Math.round(REF * (isLS ? 0.054 : 0.046))
+  const uSz   = Math.round(valSz * 0.46)
+
+  dispCols.forEach((c, i) => {
+    const cx  = PAD + i * colW
+    const topY = Math.round(PAD * 0.52)
+
+    ctx.font = `500 ${lblSz}px ${FONT}`
+    ctx.fillStyle = theme.headerColor
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top'
+    ctx.fillText(c.l, cx, topY)
+
+    ctx.fillStyle = theme.divider
+    ctx.fillRect(cx, topY + lblSz + Math.round(lblSz * 0.22), Math.round(colW * 0.55), 1)
+
+    const numY = topY + lblSz + Math.round(lblSz * 0.52)
+    ctx.font = `800 ${valSz}px ${FONT}`
+    ctx.fillStyle = theme.valueColor
+    ctx.shadowColor = theme.shadowColor; ctx.shadowBlur = 16
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top'
+    const vw = ctx.measureText(c.v).width
+    ctx.fillText(c.v, cx, numY)
+    ctx.shadowBlur = 0
+
+    ctx.font = `500 ${uSz}px ${FONT}`
+    ctx.fillStyle = theme.unitColor
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top'
+    ctx.fillText(c.u, cx + vw + Math.round(valSz * 0.07), numY + valSz * 0.52)
+  })
+
+  // ── Elevation profile chart ───────────────────────────────────────────────
+  if (pts.length > 1) {
+    const EX     = PAD
+    const EW     = CHART_LABEL_W - PAD
+    const ETOP   = HDR_H + Math.round(CHART_H * 0.04)
+    const EBOT   = CHART_H - Math.round(PAD * 0.72)
+    const EH     = EBOT - ETOP
+
+    const eles   = pts.map(p => p.ele)
+    const eMin   = Math.min(...eles)
+    const eRange = (Math.max(...eles) - eMin) || 1
+
+    const toX = i  => EX + (i / (pts.length - 1)) * EW
+    const toY = e  => EBOT - ((e - eMin) / eRange) * EH * 0.82
+
+    // Filled area
+    ctx.save()
+    ctx.beginPath()
+    ctx.moveTo(EX, EBOT)
+    for (let i = 0; i < pts.length; i++) ctx.lineTo(toX(i), toY(pts[i].ele))
+    ctx.lineTo(toX(pts.length - 1), EBOT); ctx.closePath()
+    const fillG = ctx.createLinearGradient(0, ETOP, 0, EBOT)
+    fillG.addColorStop(0, 'rgba(255,255,255,0.14)')
+    fillG.addColorStop(0.7, `rgba(${ar},${ag},${ab},0.06)`)
+    fillG.addColorStop(1, 'rgba(0,0,0,0)')
+    ctx.fillStyle = fillG; ctx.fill(); ctx.restore()
+
+    // White line
+    ctx.save()
+    ctx.beginPath()
+    for (let i = 0; i < pts.length; i++) {
+      i === 0 ? ctx.moveTo(toX(0), toY(pts[0].ele)) : ctx.lineTo(toX(i), toY(pts[i].ele))
+    }
+    ctx.shadowColor = 'rgba(255,255,255,0.55)'; ctx.shadowBlur = 7
+    ctx.strokeStyle = 'rgba(255,255,255,0.86)'
+    ctx.lineWidth = Math.max(1.5, REF * 0.0038); ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.stroke()
+    ctx.restore()
+
+    // X-axis distance labels + ticks
+    const NUM_X    = isLS ? 7 : 5
+    const xLblSz  = Math.round(REF * 0.016)
+    for (let i = 0; i < NUM_X; i++) {
+      const lx   = EX + (i / (NUM_X - 1)) * EW
+      const dist = ((stats?.totalDist ?? 0) * (i / (NUM_X - 1))).toFixed(1)
+      const lbl  = dist + 'k'
+      ctx.fillStyle = 'rgba(255,255,255,0.18)'
+      ctx.fillRect(lx - 0.5, EBOT - Math.round(PAD * 0.22), 1, Math.round(PAD * 0.22))
+      ctx.font = `400 ${xLblSz}px ${FONT}`
+      ctx.fillStyle = 'rgba(255,255,255,0.35)'
+      ctx.textAlign = i === 0 ? 'left' : (i === NUM_X - 1 ? 'right' : 'center')
+      ctx.textBaseline = 'bottom'
+      ctx.fillText(lbl, lx, CHART_H - Math.round(PAD * 0.15))
+    }
+  }
+
+  // ── Top-right: activity icon card ─────────────────────────────────────────
+  rrect(ctx, INSET_X, INSET_Y, IC_SZ, IC_SZ, IC_R)
+  ctx.fillStyle = 'rgba(0,0,0,0.72)'; ctx.fill()
+  rrect(ctx, INSET_X, INSET_Y, IC_SZ, IC_SZ, IC_R)
+  ctx.strokeStyle = 'rgba(255,255,255,0.11)'; ctx.lineWidth = 1; ctx.stroke()
+  drawHikerIcon(ctx, INSET_X + IC_SZ * 0.22, INSET_Y + IC_SZ * 0.16, IC_SZ * 0.60, 'rgba(255,255,255,0.80)')
+
+  // ── Top-right: mini route + stats card ────────────────────────────────────
+  if (MINI_H > 40) {
+    const MR = Math.round(REF * 0.020)
+    rrect(ctx, INSET_X, MINI_Y, INSET_W, MINI_H, MR)
+    ctx.fillStyle = 'rgba(0,0,0,0.72)'; ctx.fill()
+    rrect(ctx, INSET_X, MINI_Y, INSET_W, MINI_H, MR)
+    ctx.strokeStyle = 'rgba(255,255,255,0.11)'; ctx.lineWidth = 1; ctx.stroke()
+
+    const MP      = Math.round(REF * 0.013)
+    const ROUTH   = Math.round(MINI_H * 0.52)
+
+    if (pts.length > 1) {
+      drawRoute(ctx, pts, INSET_X + MP, MINI_Y + MP, INSET_W - MP * 2, ROUTH - MP, accent, {
+        routeHalo: 'rgba(0,0,0,0.50)', isNeon: false, sparkBacking: false,
+      })
+    }
+
+    // Two stat rows
+    const mISz  = Math.round(REF * 0.025)
+    const mLblSz = Math.round(REF * 0.015)
+    const r1Y    = MINI_Y + ROUTH + Math.round(MP * 0.9)
+    const r2Y    = r1Y + Math.round(MINI_H * 0.205)
+
+    const mRows = [
+      { icon: 'distance',  v: (stats?.totalDist ?? 0).toFixed(1) + ' km' },
+      { icon: 'elevation', v: (stats?.elevGain ?? 0) + ' m' },
+    ]
+    mRows.forEach((mr, i) => {
+      const ry = i === 0 ? r1Y : r2Y
+      drawStatsIcon(ctx, mr.icon, INSET_X + MP, ry, mISz, `rgba(${ar},${ag},${ab},0.72)`)
+      ctx.font = `600 ${mLblSz}px ${FONT}`
+      ctx.fillStyle = i === 0 ? '#fff' : 'rgba(255,255,255,0.65)'
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
+      ctx.fillText(mr.v, INSET_X + MP + mISz + Math.round(MP * 0.5), ry + mISz * 0.5)
+    })
+  }
+
+  // ── Bottom timeline strip ─────────────────────────────────────────────────
+  const SG = ctx.createLinearGradient(0, CHART_H, 0, H)
+  SG.addColorStop(0, 'rgba(0,0,0,0.84)')
+  SG.addColorStop(1, 'rgba(0,0,0,0.94)')
+  ctx.fillStyle = SG; ctx.fillRect(0, CHART_H, W, STRIP_H)
+  ctx.fillStyle = 'rgba(255,255,255,0.07)'; ctx.fillRect(0, CHART_H, W, 1)
+
+  const SCRUB_Y  = CHART_H + Math.round(STRIP_H * 0.30)
+  const SCRUB_L  = PAD
+  const SCRUB_R  = W - PAD
+  const SCRUB_W  = SCRUB_R - SCRUB_L
+  const TRK_H    = Math.max(2, Math.round(REF * 0.003))
+  const DOT_R    = Math.round(REF * 0.014)
+
+  // Track
+  ctx.fillStyle = 'rgba(255,255,255,0.14)'
+  ctx.fillRect(SCRUB_L, SCRUB_Y - TRK_H / 2, SCRUB_W, TRK_H)
+  // Progress fill (shows 62% as visual default)
+  const PROG = 0.62
+  ctx.fillStyle = 'rgba(255,255,255,0.68)'
+  ctx.fillRect(SCRUB_L, SCRUB_Y - TRK_H / 2, Math.round(SCRUB_W * PROG), TRK_H)
+  // Accent-coloured active segment dot
+  const PH_X = SCRUB_L + Math.round(SCRUB_W * PROG)
+  ctx.beginPath(); ctx.arc(PH_X, SCRUB_Y, DOT_R * 1.6, 0, Math.PI * 2)
+  ctx.fillStyle = '#fff'; ctx.fill()
+  // End dot
+  ctx.beginPath(); ctx.arc(SCRUB_R, SCRUB_Y, DOT_R, 0, Math.PI * 2)
+  ctx.fillStyle = 'rgba(255,255,255,0.38)'; ctx.fill()
+  // Start dot
+  ctx.beginPath(); ctx.arc(SCRUB_L, SCRUB_Y, DOT_R, 0, Math.PI * 2)
+  ctx.fillStyle = '#fff'; ctx.fill()
+
+  // Time/distance markers
+  const NUM_M   = isLS ? 8 : 5
+  const MARK_Y  = SCRUB_Y + DOT_R * 2.2 + Math.round(REF * 0.010)
+  const mSz     = Math.round(REF * 0.016)
+  for (let i = 0; i < NUM_M; i++) {
+    const fx  = SCRUB_L + (i / (NUM_M - 1)) * SCRUB_W
+    const fi  = Math.round((i / (NUM_M - 1)) * (pts.length - 1))
+    const pt  = pts[fi]
+    let lbl   = ''
+    if (pt?.time) {
+      lbl = pt.time.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
+    } else {
+      lbl = ((stats?.totalDist ?? 0) * (i / (NUM_M - 1))).toFixed(1) + 'k'
+    }
+    ctx.fillStyle = 'rgba(255,255,255,0.16)'
+    ctx.fillRect(fx - 0.5, SCRUB_Y - DOT_R - Math.round(PAD * 0.22), 1, Math.round(PAD * 0.20))
+    ctx.font = `400 ${mSz}px ${FONT}`
+    ctx.fillStyle = i === 0 || i === Math.floor(NUM_M * PROG)
+      ? 'rgba(255,255,255,0.72)' : 'rgba(255,255,255,0.35)'
+    ctx.textAlign = i === 0 ? 'left' : (i === NUM_M - 1 ? 'right' : 'center')
+    ctx.textBaseline = 'top'
+    ctx.fillText(lbl, fx, MARK_Y)
+  }
+
+  // Activity name + date in bottom-right of strip
+  const startPt = pts.find(p => p.time)
+  const aSz     = Math.round(REF * 0.018)
+  ctx.font = `300 ${aSz}px ${FONT}`
+  ctx.fillStyle = 'rgba(255,255,255,0.32)'
+  ctx.textAlign = 'right'; ctx.textBaseline = 'bottom'
+  let nameStr = name || 'Activity'
+  if (ctx.measureText(nameStr).width > SCRUB_W * 0.38) {
+    while (ctx.measureText(nameStr).width > SCRUB_W * 0.38 && nameStr.length > 3) nameStr = nameStr.slice(0, -1)
+    nameStr += '…'
+  }
+  ctx.fillText(nameStr, W - PAD, H - Math.round(PAD * 0.35))
+  if (startPt?.time) {
+    ctx.fillStyle = 'rgba(255,255,255,0.20)'
+    const dateStr = startPt.time.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    ctx.fillText(dateStr, W - PAD, H - Math.round(PAD * 0.35) - aSz - Math.round(aSz * 0.18))
+  }
+
+  if (!isPhoto) drawFooter(ctx, W, H)
+}
+
+// ── Activity Stats icon set ───────────────────────────────────────────────────
+
+function drawStatsIcon(ctx, type, x, y, size, color) {
+  ctx.save()
+  const lw = Math.max(1.2, size * 0.10)
+  ctx.strokeStyle = color; ctx.fillStyle = color
+  ctx.lineWidth = lw; ctx.lineCap = 'round'; ctx.lineJoin = 'round'
+  const cx = x + size / 2, cy = y + size / 2
+
+  switch (type) {
+    case 'distance': {
+      const py = y + size * 0.32, pr = size * 0.22
+      ctx.beginPath(); ctx.arc(cx, py, pr, 0, Math.PI * 2); ctx.stroke()
+      ctx.beginPath()
+      ctx.moveTo(cx - pr * 0.92, py)
+      ctx.bezierCurveTo(cx - pr * 0.92, py + pr * 1.0, cx, y + size * 0.92, cx, y + size * 0.92)
+      ctx.bezierCurveTo(cx + pr * 0.92, py + pr * 1.0, cx + pr * 0.92, py, cx + pr * 0.92, py)
+      ctx.stroke()
+      break
+    }
+    case 'duration': {
+      ctx.beginPath(); ctx.arc(cx, cy, size * 0.42, 0, Math.PI * 2); ctx.stroke()
+      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx, cy - size * 0.24); ctx.stroke()
+      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + size * 0.17, cy + size * 0.08); ctx.stroke()
+      break
+    }
+    case 'elevation': {
+      ctx.beginPath()
+      ctx.moveTo(cx, y + size * 0.10)
+      ctx.lineTo(x + size * 0.91, y + size * 0.88)
+      ctx.lineTo(x + size * 0.09, y + size * 0.88)
+      ctx.closePath(); ctx.stroke()
+      ctx.beginPath()
+      ctx.moveTo(cx, y + size * 0.10)
+      ctx.lineTo(cx + size * 0.14, y + size * 0.36)
+      ctx.lineTo(cx - size * 0.14, y + size * 0.36)
+      ctx.closePath()
+      ctx.globalAlpha = 0.35; ctx.fill(); ctx.globalAlpha = 1
+      break
+    }
+    case 'speed': {
+      ctx.beginPath(); ctx.arc(cx, cy + size * 0.06, size * 0.40, Math.PI * 0.82, Math.PI * 0.18); ctx.stroke()
+      const na = Math.PI * 1.38
+      ctx.beginPath()
+      ctx.moveTo(cx, cy + size * 0.06)
+      ctx.lineTo(cx + Math.cos(na) * size * 0.28, cy + size * 0.06 + Math.sin(na) * size * 0.28)
+      ctx.stroke()
+      ctx.beginPath(); ctx.arc(cx, cy + size * 0.06, lw * 1.4, 0, Math.PI * 2); ctx.fill()
+      break
+    }
+    case 'maxspeed': {
+      // Lightning bolt
+      ctx.beginPath()
+      ctx.moveTo(cx + size * 0.08, y + size * 0.06)
+      ctx.lineTo(cx - size * 0.26, cy + size * 0.06)
+      ctx.lineTo(cx + size * 0.02, cy - size * 0.02)
+      ctx.lineTo(cx - size * 0.08, y + size * 0.94)
+      ctx.lineTo(cx + size * 0.26, cy - size * 0.06)
+      ctx.lineTo(cx - size * 0.02, cy + size * 0.02)
+      ctx.closePath(); ctx.fill()
+      break
+    }
+  }
+  ctx.restore()
+}
+
+// ── Activity Stats panel (shared by standalone, overlay and full modes) ────────
+
+function drawStatsPanel(ctx, pts, stats, name, accent, ar, ag, ab, W, H, theme) {
+  const isLS     = W > H * 1.1
+  const REF      = Math.min(W, H)
+  const PAD      = Math.round(REF * 0.052)
+  const RADIUS   = Math.round(REF * 0.038)
+  const isSolid  = !theme.cardBg || theme.cardBg === 'transparent'
+
+  const maxSpd = pts.length > 0 ? Math.max(...pts.map(p => p.speedSmooth ?? 0)) : 0
+  const movingMs = computeMovingTime(pts)
+  const rows = [
+    { icon: 'distance',  l: 'Distance',      v: (stats?.totalDist ?? 0).toFixed(1),            u: 'km'   },
+    { icon: 'duration',  l: 'Duration',       v: fmtHMS(stats?.totalTime ?? 0),                 u: ''     },
+    { icon: 'elevation', l: 'Elevation Gain', v: String(stats?.elevGain ?? 0),                  u: 'm'    },
+    { icon: 'speed',     l: 'Avg Speed',      v: (stats?.avgSpeed ?? 0).toFixed(1),             u: 'km/h' },
+    { icon: 'maxspeed',  l: 'Max Speed',      v: (stats?.maxSpeed ?? maxSpd).toFixed(1),        u: 'km/h' },
+  ]
+
+  if (isLS) {
+    // Landscape: left half = route, right half = stats card
+    const ROUTE_W = Math.round(W * 0.46)
+    const CARD_X  = ROUTE_W + PAD
+    const CARD_W  = W - CARD_X - PAD
+    const CARD_H  = H - PAD * 2
+
+    drawRoute(ctx, pts, PAD, PAD, ROUTE_W - PAD, H - PAD * 2, accent, theme.routeTheme ?? {
+      routeHalo: 'rgba(0,0,0,0.45)', isNeon: false, sparkBacking: false,
+    })
+
+    if (!isSolid) {
+      rrect(ctx, CARD_X, PAD, CARD_W, CARD_H, RADIUS)
+      ctx.fillStyle = theme.cardBg; ctx.fill()
+      rrect(ctx, CARD_X, PAD, CARD_W, CARD_H, RADIUS)
+      ctx.strokeStyle = theme.cardBorder || 'rgba(255,255,255,0.06)'; ctx.lineWidth = 1; ctx.stroke()
+    }
+    _drawStatsRows(ctx, rows, pts, stats, name, accent, ar, ag, ab, CARD_X, PAD, CARD_W, CARD_H, theme, RADIUS)
+
+  } else {
+    // Portrait/square: top = route thumbnail + header, bottom = rows
+    const ROUTE_SZ  = Math.round(REF * 0.22)
+    const HDR_H     = ROUTE_SZ + PAD * 2
+    const CONTENT_Y = HDR_H
+    const CONTENT_H = H - CONTENT_Y
+
+    if (!isSolid) {
+      rrect(ctx, 0, 0, W, H, RADIUS)
+      ctx.fillStyle = theme.cardBg; ctx.fill()
+      rrect(ctx, 0, 0, W, H, RADIUS)
+      ctx.strokeStyle = theme.cardBorder || 'rgba(255,255,255,0.06)'; ctx.lineWidth = 1; ctx.stroke()
+    }
+
+    // Route circle at top-right
+    if (pts.length > 1) {
+      const rx = W - ROUTE_SZ - PAD, ry = PAD
+      ctx.save()
+      ctx.beginPath(); ctx.arc(rx + ROUTE_SZ / 2, ry + ROUTE_SZ / 2, ROUTE_SZ / 2, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(${ar},${ag},${ab},0.08)`; ctx.fill(); ctx.clip()
+      drawRoute(ctx, pts, rx, ry, ROUTE_SZ, ROUTE_SZ, accent, {
+        routeHalo: 'rgba(0,0,0,0.45)', isNeon: false, sparkBacking: false,
+      })
+      ctx.restore()
+    }
+
+    // Header text at top-left
+    const headerSz = Math.round(REF * 0.040)
+    const titleSz  = Math.round(REF * 0.028)
+    ctx.font = `700 ${headerSz}px ${FONT}`
+    ctx.fillStyle = theme.valueColor || '#fff'
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top'
+    ctx.shadowColor = theme.shadowColor || 'rgba(0,0,0,0.8)'; ctx.shadowBlur = 8
+    let nameStr = name || 'Activity'
+    while (ctx.measureText(nameStr).width > W - ROUTE_SZ - PAD * 3 && nameStr.length > 3) nameStr = nameStr.slice(0, -1)
+    if (nameStr !== (name || 'Activity')) nameStr += '…'
+    ctx.fillText(nameStr, PAD, PAD)
+    ctx.shadowBlur = 0
+
+    ctx.font = `500 ${titleSz}px ${FONT}`
+    ctx.fillStyle = theme.headerColor || 'rgba(255,255,255,0.42)'
+    ctx.fillText('ACTIVITY STATS', PAD, PAD + headerSz * 1.35)
+
+    // Accent rule
+    ctx.fillStyle = `rgba(${ar},${ag},${ab},0.50)`
+    ctx.fillRect(PAD, PAD + headerSz * 1.35 + titleSz + Math.round(titleSz * 0.35), Math.round(W * 0.14), Math.max(1, Math.round(REF * 0.003)))
+
+    // Divider line before rows
+    ctx.fillStyle = theme.divider || 'rgba(255,255,255,0.06)'
+    ctx.fillRect(PAD, CONTENT_Y - 1, W - PAD * 2, 1)
+
+    _drawStatsRows(ctx, rows, pts, stats, name, accent, ar, ag, ab, 0, CONTENT_Y, W, CONTENT_H, theme, 0)
+  }
+}
+
+function _drawStatsRows(ctx, rows, pts, stats, name, accent, ar, ag, ab, x, y, w, h, theme, radius) {
+  const PAD    = Math.round(Math.min(w, h) * 0.055)
+  const rowH   = h / rows.length
+  const valSz  = Math.round(Math.min(rowH * 0.42, w * 0.10))
+  const lblSz  = Math.round(valSz * 0.52)
+  const iconSz = Math.round(valSz * 0.72)
+  const unitSz = Math.round(valSz * 0.52)
+
+  rows.forEach((row, i) => {
+    const ry = y + i * rowH
+    const cy = ry + rowH / 2
+
+    if (i > 0) {
+      ctx.fillStyle = theme.divider || 'rgba(255,255,255,0.06)'
+      ctx.fillRect(x + PAD, ry, w - PAD * 2, 1)
+    }
+
+    // Icon
+    const iconX = x + PAD
+    drawStatsIcon(ctx, row.icon, iconX, cy - iconSz / 2, iconSz, `rgba(${ar},${ag},${ab},0.70)`)
+
+    // Label
+    ctx.font = `400 ${lblSz}px ${FONT}`
+    ctx.fillStyle = theme.labelColor || 'rgba(255,255,255,0.38)'
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
+    ctx.fillText(row.l, iconX + iconSz + Math.round(iconSz * 0.38), cy)
+
+    // Value + unit right-aligned
+    const rightX = x + w - PAD
+    if (row.u) {
+      ctx.font = `500 ${unitSz}px ${FONT}`
+      ctx.fillStyle = theme.unitColor || `rgba(${ar},${ag},${ab},0.85)`
+      ctx.textAlign = 'right'; ctx.textBaseline = 'middle'
+      ctx.fillText(row.u, rightX, cy + Math.round(valSz * 0.09))
+      const uW = ctx.measureText(row.u).width + Math.round(valSz * 0.08)
+      ctx.font = `700 ${valSz}px ${FONT}`
+      ctx.fillStyle = theme.valueColor || '#fff'
+      ctx.textAlign = 'right'; ctx.textBaseline = 'middle'
+      ctx.fillText(row.v, rightX - uW, cy)
+    } else {
+      ctx.font = `700 ${valSz}px ${FONT}`
+      ctx.fillStyle = theme.valueColor || '#fff'
+      ctx.textAlign = 'right'; ctx.textBaseline = 'middle'
+      ctx.fillText(row.v, rightX, cy)
+    }
+  })
+}
+
+// ── Integrated: Stats card floating over photo ────────────────────────────────
+
+function drawIntStats(ctx, W, H, pts, stats, accent, ar, ag, ab, atBottom) {
+  const isLS   = W > H * 1.1
+  const REF    = Math.min(W, H)
+  const PAD    = Math.round(REF * 0.038)
+  const RADIUS = Math.round(REF * 0.030)
+
+  const CARD_W = Math.round(W * (isLS ? 0.36 : 0.62))
+  const CARD_H = Math.round(H * (isLS ? 0.78 : 0.52))
+  const CARD_X = W - CARD_W - PAD
+  const CARD_Y = atBottom ? H - CARD_H - PAD : PAD
+
+  // Soft shadow behind the card
+  const rg = ctx.createRadialGradient(
+    CARD_X + CARD_W / 2, CARD_Y + CARD_H / 2, 0,
+    CARD_X + CARD_W / 2, CARD_Y + CARD_H / 2, CARD_W * 0.95,
+  )
+  rg.addColorStop(0, 'rgba(0,0,0,0.40)'); rg.addColorStop(1, 'rgba(0,0,0,0)')
+  ctx.fillStyle = rg
+  ctx.fillRect(CARD_X - PAD, CARD_Y - PAD, CARD_W + PAD * 2, CARD_H + PAD * 2)
+
+  const cardTheme = {
+    cardBg:      'rgba(10,11,14,0.84)',
+    cardBorder:  'rgba(255,255,255,0.08)',
+    headerColor: 'rgba(255,255,255,0.45)',
+    labelColor:  'rgba(255,255,255,0.40)',
+    valueColor:  '#fff',
+    unitColor:   `rgba(${ar},${ag},${ab},0.85)`,
+    divider:     'rgba(255,255,255,0.06)',
+    shadowColor: 'rgba(0,0,0,0.80)',
+  }
+
+  // Card background
+  rrect(ctx, CARD_X, CARD_Y, CARD_W, CARD_H, RADIUS)
+  ctx.fillStyle = cardTheme.cardBg; ctx.fill()
+  rrect(ctx, CARD_X, CARD_Y, CARD_W, CARD_H, RADIUS)
+  ctx.strokeStyle = cardTheme.cardBorder; ctx.lineWidth = 1; ctx.stroke()
+
+  // "ACTIVITY STATS" header inside card
+  const innerPad = Math.round(REF * 0.030)
+  const hdrSz    = Math.round(REF * 0.028)
+  ctx.font = `500 ${hdrSz}px ${FONT}`
+  ctx.fillStyle = cardTheme.headerColor
+  ctx.textAlign = 'left'; ctx.textBaseline = 'top'
+  ctx.fillText('ACTIVITY STATS', CARD_X + innerPad, CARD_Y + innerPad)
+
+  // Accent underline
+  ctx.fillStyle = `rgba(${ar},${ag},${ab},0.50)`
+  ctx.fillRect(CARD_X + innerPad, CARD_Y + innerPad + hdrSz + Math.round(hdrSz * 0.32), Math.round(CARD_W * 0.28), Math.max(1, Math.round(REF * 0.003)))
+
+  const rowsY = CARD_Y + innerPad + hdrSz + Math.round(hdrSz * 0.32) + Math.round(hdrSz * 0.55)
+  const rowsH = CARD_H - (rowsY - CARD_Y) - innerPad * 0.5
+
+  const maxSpd = pts.length > 0 ? Math.max(...pts.map(p => p.speedSmooth ?? 0)) : 0
+  const rows = [
+    { icon: 'distance',  l: 'Distance',      v: (stats?.totalDist ?? 0).toFixed(1),              u: 'km'   },
+    { icon: 'duration',  l: 'Duration',       v: fmtHMS(stats?.totalTime ?? 0),                   u: ''     },
+    { icon: 'elevation', l: 'Elevation Gain', v: String(stats?.elevGain ?? 0),                    u: 'm'    },
+    { icon: 'speed',     l: 'Avg Speed',      v: (stats?.avgSpeed ?? 0).toFixed(1),               u: 'km/h' },
+    { icon: 'maxspeed',  l: 'Max Speed',      v: (stats?.maxSpeed ?? maxSpd).toFixed(1),          u: 'km/h' },
+  ]
+
+  _drawStatsRows(ctx, rows, pts, stats, null, accent, ar, ag, ab, CARD_X, rowsY, CARD_W, rowsH, cardTheme, 0)
+
+  // Route thumbnail in opposite corner
+  if (integratedRoute.value && pts.length > 1) {
+    const ROUTE_SZ = Math.round(REF * (isLS ? 0.16 : 0.14))
+    const rx = PAD, ry = atBottom ? PAD : H - ROUTE_SZ - PAD
+    ctx.save()
+    ctx.beginPath(); ctx.arc(rx + ROUTE_SZ / 2, ry + ROUTE_SZ / 2, ROUTE_SZ / 2, 0, Math.PI * 2)
+    ctx.fillStyle = 'rgba(0,0,0,0.28)'; ctx.fill(); ctx.clip()
+    drawRoute(ctx, pts, rx, ry, ROUTE_SZ, ROUTE_SZ, accent, { routeHalo: 'rgba(0,0,0,0.45)', isNeon: false, sparkBacking: false })
+    ctx.restore()
+  }
 }
 
 function drawFooter(ctx, W, H) {
-  const ICON_H = 14, LABEL = 'gpx2video'
-  ctx.font = `500 10px ${FONT}`
-  const lw = ctx.measureText(LABEL).width, totalW = ICON_H + 4 + lw
-  const logoX = W / 2 - totalW / 2, logoY = H - 2 - ICON_H
+  const ICON_H  = Math.max(10, Math.round(Math.min(W, H) * 0.029))
+  const txtSz   = Math.max(8, Math.round(ICON_H * 0.71))
+  const LABEL   = 'gpx2video'
+  ctx.font      = `500 ${txtSz}px ${FONT}`
+  const lw      = ctx.measureText(LABEL).width
+  const totalW  = ICON_H + Math.round(ICON_H * 0.29) + lw
+  const logoX   = W / 2 - totalW / 2
+  const logoY   = H - Math.round(ICON_H * 0.14) - ICON_H
   drawLogoMark(ctx, logoX, logoY, ICON_H, 0.4)
-  ctx.font = `500 10px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,0.25)'
+  ctx.font = `500 ${txtSz}px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,0.25)'
   ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
-  ctx.shadowColor = 'rgba(0,0,0,0.8)'; ctx.shadowBlur = 4
-  ctx.fillText(LABEL, logoX + ICON_H + 4, logoY + ICON_H / 2)
+  ctx.shadowColor = 'rgba(0,0,0,0.8)'; ctx.shadowBlur = Math.round(ICON_H * 0.29)
+  ctx.fillText(LABEL, logoX + ICON_H + Math.round(ICON_H * 0.29), logoY + ICON_H / 2)
   ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0
 }
 
@@ -1874,6 +2753,14 @@ function fmtHMS(ms) {
   const m = Math.floor((s % 3600) / 60), sec = s % 60
   if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`
   return `${m}:${String(sec).padStart(2,'0')}`
+}
+
+function fmtHM(ms) {
+  if (!ms || ms <= 0) return '--'
+  const s = Math.floor(ms / 1000), h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  if (h > 0) return `${h}h ${m}m`
+  return `${m}m`
 }
 
 function hexRgb(hex) {
@@ -1943,131 +2830,233 @@ function rrect(ctx, x, y, w, h, r) {
 .sticker-btn--on   { border-color: var(--accent-semi); color: var(--accent); background: var(--accent-dim); }
 .sticker-btn svg   { width: 13px; height: 13px; flex-shrink: 0; }
 
-/* ── Backdrop ────────────────────────────────────────────────────────────── */
-.sticker-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 299;
-  background: rgba(0,0,0,0.55);
-  backdrop-filter: blur(2px);
-}
-
-/* ── Dialog (desktop) ────────────────────────────────────────────────────── */
-.sticker-dialog {
-  position: fixed;
-  inset: 0;
-  z-index: 300;
-  display: flex;
-  flex-direction: column;
-  width: min(900px, calc(100vw - 32px));
-  max-height: min(680px, calc(100dvh - 32px));
-  margin: auto;
-  background: var(--bg2, #1a1a1a);
-  border: 0.5px solid var(--border, rgba(255,255,255,0.12));
-  border-radius: 14px;
-  box-shadow: 0 24px 64px rgba(0,0,0,0.7);
-  overflow: hidden;
-}
-
-.dialog-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 16px 12px;
-  border-bottom: 0.5px solid var(--border, rgba(255,255,255,0.08));
-  flex-shrink: 0;
-}
-.dialog-title {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text);
-  letter-spacing: .02em;
-}
-.dialog-title svg { color: var(--accent, #f59e0b); }
-.dialog-close {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px; height: 28px;
-  border-radius: 6px;
-  border: none;
-  background: transparent;
-  color: var(--text3);
-  cursor: pointer;
-  transition: background .12s, color .12s;
-}
-.dialog-close:hover { background: var(--bg3); color: var(--text); }
-.dialog-close svg { width: 14px; height: 14px; }
-
-.dialog-body {
-  display: flex;
-  flex: 1;
-  overflow: hidden;
-}
-
-/* Left controls column */
-.dialog-controls {
-  width: 260px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px;
-  border-right: 0.5px solid var(--border, rgba(255,255,255,0.08));
-  overflow-y: auto;
-}
-
-.ctrl-section { display: flex; flex-direction: column; gap: 6px; }
-.ctrl-section-label {
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: .06em;
-  color: var(--text3);
-}
-
-/* Right preview column */
-.dialog-preview {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 16px;
-  background: var(--bg1, #141414);
-  overflow: hidden;
-}
-.dialog-preview .sticker-preview-wrap {
-  border-radius: 10px;
-  overflow: hidden;
-  border: 0.5px solid var(--border2, rgba(255,255,255,0.07));
-  background-image: repeating-conic-gradient(rgba(255,255,255,0.04) 0% 25%, transparent 0% 50%);
-  background-size: 12px 12px;
-  max-width: 100%;
-  max-height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.dialog-preview .sticker-canvas {
-  display: block;
-  max-width: 100%;
-  max-height: calc(min(680px, 100dvh - 32px) - 64px - 32px);
-  height: auto;
-}
-
-/* ── Mobile full-screen sticker editor ───────────────────────────────────── */
-.sm-shell {
+/* ── Full-page sticker editor shell ──────────────────────────────────────── */
+.fp-shell {
   position: fixed;
   inset: 0;
   z-index: 300;
   display: flex;
   flex-direction: column;
   background: #0d0d0d;
+  color: var(--text, #e8e8e8);
 }
 
+/* Header */
+.fp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  padding-top: max(0px, env(safe-area-inset-top, 0px));
+  height: 52px;
+  border-bottom: 0.5px solid var(--border, rgba(255,255,255,0.09));
+  background: var(--bg2, #161616);
+  flex-shrink: 0;
+  gap: 12px;
+}
+.fp-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text, #e8e8e8);
+  letter-spacing: .02em;
+}
+.fp-title svg { color: var(--accent, #f59e0b); }
+
+.fp-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fp-dl-btn {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: .42rem 1rem;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: var(--radius-md, 8px);
+  border: 0.5px solid var(--border2, rgba(255,255,255,0.1));
+  background: var(--bg3, #222);
+  color: var(--text2, #aaa);
+  cursor: pointer;
+  transition: background .12s, color .12s, border-color .12s;
+  white-space: nowrap;
+}
+.fp-dl-btn:hover { background: var(--bg4, #2a2a2a); color: var(--text, #e8e8e8); border-color: var(--border, rgba(255,255,255,0.18)); }
+.fp-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px; height: 30px;
+  border: none;
+  background: var(--bg3, #222);
+  border-radius: 50%;
+  color: var(--text2, #aaa);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background .12s, color .12s;
+}
+.fp-close:hover { background: var(--bg4, #2a2a2a); color: var(--text, #e8e8e8); }
+.fp-close svg { width: 13px; height: 13px; }
+
+/* Body: sidebar + preview */
+.fp-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Sidebar — hidden on mobile, visible on desktop */
+.fp-sidebar {
+  display: none;
+}
+
+/* Canvas preview area */
+.fp-preview {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: #080808;
+  overflow: hidden;
+  min-height: 0;
+  min-width: 0;
+}
+.fp-canvas-wrap {
+  border-radius: 12px;
+  overflow: hidden;
+  border: 0.5px solid rgba(255,255,255,0.08);
+  background-image: repeating-conic-gradient(rgba(255,255,255,0.035) 0% 25%, transparent 0% 50%);
+  background-size: 14px 14px;
+  max-width: 100%;
+  max-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.fp-canvas {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100dvh - 52px - 40px);
+  height: auto;
+}
+
+/* fp-section labels (used inside sidebar) */
+.fp-section {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.fp-section-lbl {
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: var(--text3, #666);
+}
+
+/* ── Desktop layout (≥ 700 px) ───────────────────────────────────────────── */
+@media (min-width: 700px) {
+  .fp-dl-btn { display: flex; }
+
+  .fp-sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    width: 320px;
+    flex-shrink: 0;
+    padding: 0;
+    border-right: 0.5px solid var(--border, rgba(255,255,255,0.08));
+    background: var(--bg2, #161616);
+    overflow: hidden;
+  }
+
+  .fp-tab-bar {
+    display: flex;
+    gap: 0;
+    padding: 10px 14px 0;
+    border-bottom: 0.5px solid var(--border, rgba(255,255,255,0.08));
+    flex-shrink: 0;
+    background: var(--bg2, #161616);
+  }
+
+  .fp-tab {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: .5rem .9rem;
+    font-size: 12.5px;
+    font-weight: 600;
+    letter-spacing: .01em;
+    border: none;
+    background: transparent;
+    color: var(--text3, #555);
+    cursor: pointer;
+    border-radius: 6px 6px 0 0;
+    transition: color .14s;
+    white-space: nowrap;
+  }
+  .fp-tab:hover { color: var(--text2, #aaa); }
+  .fp-tab--on {
+    color: var(--text, #e8e8e8);
+  }
+  .fp-tab--on::after {
+    content: '';
+    position: absolute;
+    bottom: -0.5px;
+    left: 0; right: 0;
+    height: 2px;
+    background: var(--accent, #f59e0b);
+    border-radius: 2px 2px 0 0;
+  }
+  .fp-tab-dot {
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--accent, #f59e0b);
+    flex-shrink: 0;
+  }
+
+  .fp-tab-content {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    flex: 1;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 16px 16px 20px;
+  }
+  .fp-tab-content > .fp-section { margin-bottom: 16px; }
+  .fp-tab-content > .fp-section:last-child { margin-bottom: 0; }
+
+  .fp-divider {
+    height: 0.5px;
+    background: var(--border, rgba(255,255,255,0.08));
+    margin: 4px 0 16px;
+    flex-shrink: 0;
+  }
+
+  .fp-preview {
+    padding: 32px 40px;
+  }
+
+  .fp-canvas {
+    max-height: calc(100dvh - 52px - 64px);
+    box-shadow: 0 8px 40px rgba(0,0,0,0.6), 0 2px 8px rgba(0,0,0,0.4);
+  }
+
+  /* Hide mobile-only elements */
+  .sm-nav  { display: none !important; }
+  .sm-panel { display: none !important; }
+}
+
+/* ── sm-panel / sm-nav kept for mobile ───────────────────────────────────── */
 /* Header */
 .sm-header {
   display: flex;
@@ -2101,7 +3090,7 @@ function rrect(ctx, x, y, w, h, r) {
 }
 .sm-close svg { width: 13px; height: 13px; }
 
-/* Preview */
+/* Preview (mobile) */
 .sm-preview {
   flex: 1;
   display: flex;
@@ -2312,11 +3301,36 @@ function rrect(ctx, x, y, w, h, r) {
   font-size: 12px;
   color: var(--text2);
 }
+.embed-upload-filename {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .embed-link { color: var(--accent-blue); }
 .embed-upload-hint {
   font-size: 10px;
   color: var(--text3);
 }
+.embed-clear-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--text3);
+  cursor: pointer;
+  border-radius: 50%;
+  transition: background .12s, color .12s;
+  padding: 0;
+}
+.embed-clear-btn:hover { background: rgba(255,255,255,0.08); color: var(--text); }
+.embed-clear-btn svg { width: 10px; height: 10px; }
 .embed-drag-hint {
   font-size: 10px;
   color: var(--text3);
@@ -2370,7 +3384,12 @@ function rrect(ctx, x, y, w, h, r) {
   transition: color .12s, background .12s;
 }
 .int-pos-btn:hover { color: var(--text2); }
-.int-pos-btn--on { background: var(--bg4, #252525); color: var(--text); border-color: var(--border); }
+.int-pos-btn--on {
+  background: rgba(245,158,11,0.12);
+  color: var(--accent, #f59e0b);
+  border-color: rgba(245,158,11,0.35);
+  font-weight: 700;
+}
 
 /* ── Toggle switch ────────────────────────────────────────────────────────── */
 .toggle-label {
@@ -2517,7 +3536,12 @@ function rrect(ctx, x, y, w, h, r) {
   white-space: nowrap;
 }
 .format-btn:hover { color: var(--text2); background: var(--bg4, #252525); }
-.format-btn--on   { background: var(--bg4, #252525); color: var(--text); border-color: var(--border); }
+.format-btn--on   {
+  background: rgba(245,158,11,0.12);
+  color: var(--accent, #f59e0b);
+  border-color: rgba(245,158,11,0.35);
+  font-weight: 700;
+}
 
 /* ── Preview ─────────────────────────────────────────────────────────────── */
 .sticker-preview-wrap {

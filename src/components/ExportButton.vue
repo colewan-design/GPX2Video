@@ -19,7 +19,10 @@
         <div class="export-bar-track">
           <div class="export-bar-fill" :style="{ width: Math.round(progress * 100) + '%' }" />
         </div>
-        <span class="export-pct">{{ Math.round(progress * 100) }}%</span>
+        <span class="export-pct">
+          <template v-if="progress >= 0.94 && progress < 1">Finalizing…</template>
+          <template v-else>{{ Math.round(progress * 100) }}%</template>
+        </span>
       </div>
       <button class="cancel-btn" @click="$emit('cancel')">
         <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
@@ -53,26 +56,24 @@ defineEmits(['export', 'cancel'])
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: .5rem 1rem;
+  padding: 0 14px;
+  height: 28px;
   font-size: 12px;
-  font-weight: 700;
-  letter-spacing: .04em;
-  text-transform: uppercase;
+  font-weight: 600;
   border-radius: var(--radius-md);
   cursor: pointer;
-  background: transparent;
-  border: 1px solid var(--accent-semi);
-  color: var(--accent);
-  transition: all .15s;
+  background: var(--export-bg);
+  border: 1px solid var(--export-bg);
+  color: #fff;
+  transition: background .15s, border-color .15s;
   white-space: nowrap;
 }
 .export-btn:hover:not(:disabled) {
-  background: var(--accent-dim);
-  border-color: var(--accent);
-  box-shadow: 0 0 18px rgba(255,214,10,.2);
+  background: var(--export-hover);
+  border-color: var(--export-hover);
 }
-.export-btn:disabled { opacity: .35; cursor: not-allowed; }
-.export-btn svg { width: 14px; height: 14px; flex-shrink: 0; }
+.export-btn:disabled { opacity: .4; cursor: not-allowed; }
+.export-btn svg { width: 13px; height: 13px; flex-shrink: 0; }
 
 .export-progress-wrap {
   display: flex;
@@ -82,7 +83,7 @@ defineEmits(['export', 'cancel'])
 .spinner {
   width: 12px; height: 12px;
   border: 1.5px solid var(--border2);
-  border-top-color: var(--accent);
+  border-top-color: var(--blue);
   border-radius: 50%;
   animation: spin .65s linear infinite;
   flex-shrink: 0;
@@ -96,17 +97,16 @@ defineEmits(['export', 'cancel'])
 }
 .export-bar-fill {
   height: 100%;
-  background: var(--accent);
+  background: var(--blue);
   border-radius: 2px;
   transition: width .1s linear;
-  box-shadow: 0 0 6px var(--accent-glow);
 }
 .export-pct {
   font-size: 11px;
-  font-weight: 700;
-  color: var(--accent);
+  font-weight: 500;
+  color: var(--text2);
   font-variant-numeric: tabular-nums;
-  min-width: 30px;
+  min-width: 62px;
 }
 .cancel-btn {
   display: flex;

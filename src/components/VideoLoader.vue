@@ -23,6 +23,7 @@
           <span class="vp-thumb-dur">{{ v.dur }}</span>
         </div>
         <div v-if="i === activeIdx" class="vp-thumb-active-ring" />
+        <button class="vp-thumb-remove" @click.stop="removeVideo(i)" title="Remove">×</button>
       </div>
       <!-- Add more button -->
       <div class="vp-thumb vp-add" @click="fileInput.click()">
@@ -58,6 +59,7 @@
 import { ref, onBeforeUnmount } from 'vue'
 import { useDraggedVideo } from '../composables/useDraggedVideo.js'
 
+
 const emit = defineEmits(['file', 'append', 'select'])
 const { draggedFile, isDragging } = useDraggedVideo()
 
@@ -73,7 +75,9 @@ function setThumbRef(el, i) {
 
 function seekThumb(i) {
   const el = thumbRefs.value[i]
-  if (el) el.currentTime = 1
+  if (!el) return
+  if (!videos.value[i]?.dur) videos.value[i].dur = fmtDur(el.duration)
+  el.currentTime = 1
 }
 
 function fmtDur(sec) {
@@ -88,29 +92,33 @@ function addFiles(files) {
   for (const file of files) {
     const url = URL.createObjectURL(file)
     videos.value.push({ file, name: file.name, url, dur: '' })
-    const idx = videos.value.length - 1
-    const tmp = document.createElement('video')
-    tmp.preload = 'metadata'
-    tmp.src = url
-    tmp.onloadedmetadata = () => {
-      videos.value[idx].dur = fmtDur(tmp.duration)
-      tmp.src = ''
-    }
   }
   if (isFirst) {
     activeIdx.value = 0
-    emit('file', videos.value[0].file)          // first video: replace
+    emit('file', videos.value[0].file)
     if (files.length > 1) {
-      emit('append', Array.from(files).slice(1)) // rest of first drop: append
+      emit('append', Array.from(files).slice(1))
     }
   } else {
-    emit('append', Array.from(files))            // additional picks: append
+    emit('append', Array.from(files))
   }
 }
 
 function selectVideo(i) {
   activeIdx.value = i
-  emit('select', i)  // seek to this segment in the timeline
+  emit('select', i)
+}
+
+function removeVideo(i) {
+  URL.revokeObjectURL(videos.value[i].url)
+  videos.value.splice(i, 1)
+  if (videos.value.length === 0) {
+    activeIdx.value = 0
+    emit('file', null)
+  } else {
+    activeIdx.value = Math.min(activeIdx.value, videos.value.length - 1)
+    emit('select', activeIdx.value)
+  }
 }
 
 function onDrop(e) {
@@ -137,9 +145,17 @@ function onDragEnd() {
   draggedFile.value = null
 }
 
+function clearCache() {
+  videos.value.forEach(v => URL.revokeObjectURL(v.url))
+  videos.value  = []
+  activeIdx.value = 0
+}
+
 onBeforeUnmount(() => {
   videos.value.forEach(v => URL.revokeObjectURL(v.url))
 })
+
+defineExpose({ clearCache })
 </script>
 
 <style scoped>
@@ -195,6 +211,27 @@ onBeforeUnmount(() => {
   letter-spacing: .04em;
   font-variant-numeric: tabular-nums;
 }
+
+.vp-thumb-remove {
+  position: absolute;
+  top: 4px; right: 4px;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0,0,0,.7);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity .15s, background .15s;
+  padding: 0;
+}
+.vp-thumb:hover .vp-thumb-remove { opacity: 1; }
+.vp-thumb-remove:hover { background: var(--red); }
 
 .vp-thumb-active-ring {
   position: absolute;

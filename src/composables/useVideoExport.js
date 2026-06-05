@@ -1,9 +1,141 @@
 import { ref } from 'vue'
 import { Muxer, ArrayBufferTarget } from 'mp4-muxer'
+import { createFile as mp4boxCreateFile, DataStream } from 'mp4box'
 import { arrayMax, lerp, fmtTime } from '../utils/geo.js'
 import { useVideoShader } from './useVideoShader.js'
 import { SHADER_PARAMS } from '../utils/filters.js'
 import { SPEED_PRESETS, buildFrameSourceTimes, isFlatNormal } from '../utils/speedCurve.js'
+
+// Extract encoded audio samples from a blob URL via mp4box (no decode/re-encode).
+// Returns { info, samples, description } or null if audio unavailable / parse fails.
+async function extractAudioFromMp4(src) {
+  try {
+    const ab = await fetch(src).then(r => r.arrayBuffer())
+    ab.fileStart = 0
+
+    let info = null
+    let description = null
+    const samples = []
+    let hasError = false
+
+    const mp4file = mp4boxCreateFile()
+    mp4file.onError = () => { hasError = true }
+
+    mp4file.onReady = (boxInfo) => {
+      const t = boxInfo.tracks.find(tr => tr.type === 'audio')
+      if (!t) return
+      info = {
+        codec:            t.codec,
+        sampleRate:       t.audio.sample_rate,
+        numberOfChannels: t.audio.channel_count,
+        timescale:        t.timescale,
+      }
+      // Try to grab AudioSpecificConfig from esds for the muxer decoderConfig
+      try {
+        const entry = mp4file.getTrackById(t.id).mdia.minf.stbl.stsd.entries[0]
+        const decoderSpecInfo = entry.esds?.esd?.descs?.[0]?.descs?.[0]
+        if (decoderSpecInfo?.data) description = new Uint8Array(decoderSpecInfo.data).buffer.slice(0)
+      } catch {}
+      mp4file.setExtractionOptions(t.id, null, { nbSamples: Infinity })
+      mp4file.start()
+    }
+
+    mp4file.onSamples = (id, user, newSamples) => {
+      for (const s of newSamples) samples.push(s)
+    }
+
+    mp4file.appendBuffer(ab)
+    mp4file.flush()
+
+    if (hasError || !info) return null
+    return { info, samples, description }
+  } catch {
+    return null
+  }
+}
+
+// ─── Rotation helpers ────────────────────────────────────────────────────────
+// Phone cameras record landscape-coded frames with a rotation flag in the
+// MP4 tkhd matrix. Browsers apply this for <video> display but not for
+// ctx.drawImage() or VideoDecoder frames — we must compensate manually.
+
+function parseMp4Rotation(matrix) {
+  if (!matrix || matrix.length < 5) return 0
+  // matrix is 16.16 fixed-point: [a,b,u, c,d,v, tx,ty,w]
+  // Pure-rotation patterns (values ≈ ±65536 for ±1.0):
+  const b = matrix[1], c = matrix[3]
+  if (b > 0 && c < 0) return 90
+  if (b < 0 && c > 0) return 270
+  if (matrix[0] < 0 && matrix[4] < 0) return 180
+  return 0
+}
+
+async function getVideoRotation(src) {
+  if (!src) return 0
+  try {
+    const ab = await fetch(src).then(r => r.arrayBuffer())
+    ab.fileStart = 0
+    let rotation = 0
+    const file = mp4boxCreateFile()
+    file.onReady = (info) => {
+      const t = info.tracks.find(tr => tr.type === 'video')
+      if (!t) return
+      try {
+        const tkhd = file.getTrackById(t.id).tkhd
+        if (tkhd?.matrix) rotation = parseMp4Rotation(tkhd.matrix)
+      } catch {}
+    }
+    file.appendBuffer(ab)
+    file.flush()
+    return rotation
+  } catch { return 0 }
+}
+
+// Extract encoded video samples + decoder config from a blob URL via mp4box.
+// Returns { codec, codedWidth, codedHeight, description, samples, timescale } or null.
+async function extractVideoFromMp4(src) {
+  try {
+    const ab = await fetch(src).then(r => r.arrayBuffer())
+    ab.fileStart = 0
+
+    let trackInfo = null
+    let description = null
+    const samples = []
+    let hasError = false
+
+    const file = mp4boxCreateFile()
+    file.onError = () => { hasError = true }
+
+    file.onReady = (info) => {
+      const t = info.tracks.find(tr => tr.type === 'video')
+      if (!t) return
+      trackInfo = { codec: t.codec, codedWidth: t.video.width, codedHeight: t.video.height, timescale: t.timescale }
+      try {
+        const entry = file.getTrackById(t.id).mdia.minf.stbl.stsd.entries[0]
+        const box = entry.avcC || entry.hvcC || entry.vpcC || entry.av1C
+        if (box) {
+          const stream = new DataStream(undefined, 0, DataStream.BIG_ENDIAN)
+          box.write(stream)
+          description = new Uint8Array(stream.buffer, 8) // skip 4-byte size + 4-byte type header
+        }
+      } catch {}
+      file.setExtractionOptions(t.id, null, { nbSamples: Infinity })
+      file.start()
+    }
+
+    file.onSamples = (id, user, newSamples) => {
+      for (const s of newSamples) samples.push(s)
+    }
+
+    file.appendBuffer(ab)
+    file.flush()
+
+    if (hasError || !trackInfo) return null
+    return { ...trackInfo, description, samples }
+  } catch {
+    return null
+  }
+}
 
 export function useVideoExport() {
   const exporting     = ref(false)
@@ -20,8 +152,10 @@ export function useVideoExport() {
     shaderParams = null,
     speedCurvePreset = 'normal',
     clipsArray = null,
+    captionSegments = [],
+    captionStyle = null,
   ) {
-    if (!videoEl || !gpxPoints.length) return
+    if (!videoEl) return
 
     if (!('VideoEncoder' in window)) {
       exportError.value = 'WebCodecs not supported — use Chrome or Edge 94+.'
@@ -32,13 +166,13 @@ export function useVideoExport() {
     exportProgress.value = 0
     exportError.value    = null
 
-    const tEnd = trimEnd ?? gpxPoints.length - 1
+    const tEnd = gpxPoints.length ? (trimEnd ?? gpxPoints.length - 1) : 0
 
     try {
       await runExport(
         videoEl, segments ?? [], gpxPoints, totalOffsetSec, totalTime, trimStart, tEnd,
         videoTrimStartSec, videoTrimEndSec, overlayFormat, overlayColor, locationName,
-        shaderParams, speedCurvePreset, clipsArray,
+        shaderParams, speedCurvePreset, clipsArray, captionSegments, captionStyle,
       )
     } catch (e) {
       exportError.value = e.message ?? 'Export failed.'
@@ -55,13 +189,27 @@ export function useVideoExport() {
     videoEl, segments, gpxPoints, totalOffsetSec, totalTime, trimStart, trimEnd,
     videoTrimStartSec, videoTrimEndSec, overlayFormat = 'classic', overlayColor = '#f59e0b', locationName = '',
     shaderParams = null, speedCurvePreset = 'normal', clipsArray = null,
+    captionSegments = [], captionStyle = null,
   ) {
     const srcW = videoEl.videoWidth
     const srcH = videoEl.videoHeight
 
-    const scale = Math.min(1, 1920 / srcW)
-    const W = Math.round(srcW * scale / 2) * 2
-    const H = Math.round(srcH * scale / 2) * 2
+    // Read rotation from MP4 container metadata. Phone videos coded landscape with
+    // rotate=90 need manual rotation since ctx.drawImage ignores rotation metadata.
+    const firstSrc = segments?.[0]?.src || videoEl.src || null
+    const videoRotation = await getVideoRotation(firstSrc)
+    const swapDims = videoRotation === 90 || videoRotation === 270
+    // Browsers return display (post-rotation) dimensions from videoWidth/videoHeight,
+    // so dispW/dispH are already correct — no swap needed for canvas size.
+    const dispW = srcW
+    const dispH = srcH
+    // Coded dimensions are needed by drawImage, which ignores rotation metadata.
+    const codedW = swapDims ? srcH : srcW
+    const codedH = swapDims ? srcW : srcH
+
+    const scale = Math.min(1, 1920 / Math.max(dispW, dispH))
+    const W = Math.round(dispW * scale / 2) * 2
+    const H = Math.round(dispH * scale / 2) * 2
 
     const fps           = 30
     const frameInterval = 1 / fps
@@ -125,18 +273,49 @@ export function useVideoExport() {
       return v
     }
 
-    // ── Audio: only for single-segment flat-speed exports ─────────────────────
+    // ── Audio stream copy: extract encoded audio from source segments ──────────
     const allSameSeg = activeClips.every(c => c.segmentIdx === 0)
     const curvePreset    = SPEED_PRESETS[speedCurvePreset] ?? SPEED_PRESETS.normal
     const curveKeyframes = curvePreset.keyframes
     const useCurve       = !isFlatNormal(curveKeyframes)
 
+    // VideoDecoder requires the full file in RAM — cap at 60s to avoid OOM.
+    // Audio stream copy only extracts the audio track (tiny), so no length limit.
+    const shortClip = totalActiveDur <= 60
+
+    const audioExtracted = new Map()  // segIdx → { info, samples, description }
+    for (const segIdx of new Set(activeClips.map(c => c.segmentIdx))) {
+      const src = activeClips.find(c => c.segmentIdx === segIdx)?.src
+      if (src) {
+        const data = await extractAudioFromMp4(src)
+        if (data) audioExtracted.set(segIdx, data)
+      }
+    }
+    const useStreamCopy = audioExtracted.size > 0 &&
+      activeClips.every(c => audioExtracted.has(c.segmentIdx))
+    const streamAudioInfo = useStreamCopy
+      ? (audioExtracted.get(activeClips[0]?.segmentIdx ?? 0)?.info ?? null)
+      : null
+
+    // ── Pre-extract video samples for fast VideoDecoder path ─────────────────
+    const videoExtracted = new Map()  // src → { codec, codedWidth, codedHeight, description, samples }
+    if ('VideoDecoder' in window && !useCurve && shortClip) {
+      for (const src of new Set(activeClips.map(c => c.src).filter(Boolean))) {
+        const data = await extractVideoFromMp4(src)
+        if (data) videoExtracted.set(src, data)
+      }
+    }
+    const allClipsHaveDecoderData = !useCurve &&
+      activeClips.length > 0 &&
+      activeClips.every(c => c.src && videoExtracted.has(c.src))
+
+    // ── Fallback: captureStream audio (single-segment, flat speed only) ───────
     let AUDIO_SAMPLE_RATE = 48000
     let AUDIO_CHANNELS    = 2
     let audioEncoder      = null
     let audioReader       = null
 
-    if (allSameSeg && !useCurve &&
+    if (!useStreamCopy && !allClipsHaveDecoderData && allSameSeg && !useCurve &&
         'AudioEncoder' in window &&
         'MediaStreamTrackProcessor' in window &&
         typeof videoEl.captureStream === 'function') {
@@ -144,6 +323,7 @@ export function useVideoExport() {
         const stream     = videoEl.captureStream()
         const audioTrack = stream.getAudioTracks()[0]
         if (audioTrack) {
+          // Use getSettings() to get sample rate — avoids blocking read on a paused element.
           const settings    = audioTrack.getSettings()
           AUDIO_SAMPLE_RATE = settings.sampleRate   ?? 48000
           AUDIO_CHANNELS    = settings.channelCount ?? 2
@@ -152,27 +332,70 @@ export function useVideoExport() {
       } catch { audioReader = null }
     }
 
+    // ── PCM fallback: AudioContext decode → AudioEncoder re-encode ───────────
+    // Only attempted for short clips where the full-file load is feasible.
+    let pcmAudioBuffer = null
+    if (!useStreamCopy && !audioReader && shortClip && 'AudioEncoder' in window) {
+      try {
+        const firstSrc = activeClips[0]?.src
+        if (firstSrc) {
+          const ab     = await fetch(firstSrc).then(r => r.arrayBuffer())
+          const tmpCtx = new AudioContext()
+          pcmAudioBuffer = await tmpCtx.decodeAudioData(ab)
+          await tmpCtx.close()
+        }
+      } catch { pcmAudioBuffer = null }
+    }
+    if (pcmAudioBuffer) {
+      AUDIO_SAMPLE_RATE = pcmAudioBuffer.sampleRate
+      AUDIO_CHANNELS    = pcmAudioBuffer.numberOfChannels
+    }
+
     // ── Muxer + encoders ──────────────────────────────────────────────────────
+    const hasAudio = useStreamCopy ? !!streamAudioInfo : !!(audioReader || pcmAudioBuffer)
+    const audioSR  = useStreamCopy ? (streamAudioInfo?.sampleRate       ?? 48000) : AUDIO_SAMPLE_RATE
+    const audioCH  = useStreamCopy ? (streamAudioInfo?.numberOfChannels ?? 2)     : AUDIO_CHANNELS
+
     const target = new ArrayBufferTarget()
     const muxer  = new Muxer({
       target,
       video: { codec: 'avc', width: W, height: H },
-      ...(audioReader ? { audio: { codec: 'aac', sampleRate: AUDIO_SAMPLE_RATE, numberOfChannels: AUDIO_CHANNELS } } : {}),
+      ...(hasAudio ? { audio: { codec: 'aac', sampleRate: audioSR, numberOfChannels: audioCH } } : {}),
       fastStart: 'in-memory',
       firstTimestampBehavior: 'offset',
     })
 
     let encoderError = null
-    const encoder = new VideoEncoder({
-      output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-      error:  (e) => { encoderError = e },
-    })
-    encoder.configure({ codec: avcCodec(W, H), width: W, height: H, bitrate: 8_000_000, framerate: fps })
+    let encCfg = { codec: avcCodec(W, H), width: W, height: H, bitrate: 8_000_000, framerate: fps, hardwareAcceleration: 'no-preference' }
 
-    if (audioReader) {
+    function makeVideoEncoder() {
+      const enc = new VideoEncoder({
+        output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+        error:  (e) => { encoderError = e },
+      })
+      enc.configure(encCfg)
+      return enc
+    }
+
+    // Returns true if encoding can continue (error cleared or recovered), false if fatal.
+    function tryRecoverEncoder() {
+      if (!encoderError) return true
+      // If already on software encoding, can't recover further.
+      if (encCfg.hardwareAcceleration === 'prefer-software') return false
+      encoderError = null
+      try { encoder.close() } catch {}
+      // Fall back to software encoding — works regardless of GPU contention/context loss.
+      encCfg = { ...encCfg, hardwareAcceleration: 'prefer-software' }
+      encoder = makeVideoEncoder()
+      return true
+    }
+
+    let encoder = makeVideoEncoder()
+
+    if (!useStreamCopy && audioReader) {
       audioEncoder = new AudioEncoder({
         output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
-        error:  (e) => { encoderError = e },
+        error:  () => {},
       })
       audioEncoder.configure({ codec: 'mp4a.40.2', sampleRate: AUDIO_SAMPLE_RATE, numberOfChannels: AUDIO_CHANNELS, bitrate: 128_000 })
     }
@@ -186,30 +409,138 @@ export function useVideoExport() {
       })
     }
 
+    // ── Rotation-aware draw helper ────────────────────────────────────────────
+    // Applies the transform needed to correct rotation metadata before drawing.
+    // rotation=90 : coded 1920×1080 → display 1080×1920  (most phone portrait videos)
+    // rotation=270: coded 1920×1080 → display 1080×1920  (opposite landscape orientation)
+    function drawRotated(c, source) {
+      if (videoRotation === 0) {
+        c.drawImage(source, 0, 0, W, H)
+        return
+      }
+      c.save()
+      if (videoRotation === 90) {
+        // translate(W, 0) + rotate(+90°) maps frame bottom-left → canvas top-left
+        c.translate(W, 0)
+        c.rotate(Math.PI / 2)
+      } else if (videoRotation === 270) {
+        c.translate(0, H)
+        c.rotate(-Math.PI / 2)
+      } else { // 180
+        c.translate(W, H)
+        c.rotate(Math.PI)
+      }
+      c.drawImage(source, 0, 0, codedW, codedH)
+      c.restore()
+    }
+
     // ── Render one frame ──────────────────────────────────────────────────────
     // absTime = absolute position on the full timeline (for GPX overlay mapping)
     let activeGlOk = false
     let activeVidEl = null
 
-    function renderCanvas(absTime, overallProgress) {
-      const idx   = findAnimIdx(gpxPoints, totalOffsetSec, absTime, totalActiveDur, trimStart, trimEnd)
-      const point = gpxPoints[idx]
-      if (activeGlOk) {
-        shader.renderFrame()
-        ctx.drawImage(glCanvas, 0, 0, W, H)
-      } else {
-        ctx.drawImage(activeVidEl, 0, 0, W, H)
+    // ── Caption drawing ───────────────────────────────────────────────────────
+    const capStyle = captionStyle ?? { position: 'bottom', fontSize: 'medium', background: true }
+    function drawCaptions(c, w, h, absTime) {
+      if (!captionSegments?.length) return
+      const seg = captionSegments.find(s => absTime >= s.start && absTime < s.end)
+      if (!seg?.text) return
+
+      const scale = w / 600
+      const fontPx = capStyle.fontSize === 'small' ? 16 : capStyle.fontSize === 'large' ? 28 : 22
+      c.save()
+      c.font = `bold ${fontPx * scale}px Inter, Arial, sans-serif`
+      c.textAlign = 'center'
+      c.textBaseline = 'bottom'
+      const pad = 12 * scale
+      const lineH = fontPx * scale * 1.35
+      const x = w / 2
+      const y = capStyle.position === 'top' ? lineH + 28 * scale : h - 52 * scale
+
+      const words = seg.text.trim().split(/\s+/)
+      const maxW = w * 0.85
+      const lines = []
+      let line = ''
+      for (const word of words) {
+        const test = line ? `${line} ${word}` : word
+        if (c.measureText(test).width > maxW && line) { lines.push(line); line = word }
+        else line = test
       }
-      drawMapInset(ctx, W, H, gpxPoints, idx, maxSpeed, trimStart)
-      drawHud(ctx, W, H, point, gpxPoints, idx, overallProgress, totalTime, overlayFormat, overlayColor, locationName)
+      if (line) lines.push(line)
+
+      const blockH = lines.length * lineH
+      const baseY = capStyle.position === 'top' ? y : y - blockH + lineH
+
+      if (capStyle.background) {
+        const maxLineW = Math.max(...lines.map(l => c.measureText(l).width))
+        c.fillStyle = 'rgba(0,0,0,0.55)'
+        const rx = x - maxLineW / 2 - pad, ry = baseY - lineH - pad * 0.5
+        const rw = maxLineW + pad * 2, rh = blockH + pad
+        rrect(c, rx, ry, rw, rh, 6 * scale)
+        c.fill()
+      }
+
+      c.fillStyle = '#ffffff'
+      lines.forEach((l, i) => c.fillText(l, x, baseY + i * lineH))
+      c.restore()
     }
 
-    // Seek to the first clip start for audio sync
-    await seekElTo(videoEl, activeClips[0].localStart)
+    // ── Point 2: overlay cache — HUD + map are O(N-pts) to draw; GPS updates at
+    // ~1 Hz while we encode at 30 fps, so we cache the overlay on a separate
+    // canvas and only redraw it when the GPS point index actually changes.
+    const overlayCanvas = new OffscreenCanvas(W, H)
+    const overlayCtx    = overlayCanvas.getContext('2d')
+    let lastOverlayIdx  = -1
+    let lastOverlaySec  = -1
 
-    // ── Audio capture loop (single-segment flat-speed only) ───────────────────
+    function renderCanvas(absTime, overallProgress, frame = null) {
+      const idx   = findAnimIdx(gpxPoints, totalOffsetSec, absTime, totalActiveDur, trimStart, trimEnd)
+      const point = gpxPoints[idx]
+      const currentSec = Math.floor(overallProgress * totalActiveDur)
+
+      // Rebuild overlay when GPS point changes OR when the clock second ticks
+      if (gpxPoints.length && (idx !== lastOverlayIdx || currentSec !== lastOverlaySec)) {
+        const displayTime = gpxPoints[0]?.time
+          ? new Date(gpxPoints[0].time.getTime() + (totalOffsetSec + absTime) * 1000)
+          : null
+        overlayCtx.clearRect(0, 0, W, H)
+        drawMapInset(overlayCtx, W, H, gpxPoints, idx, maxSpeed, trimStart)
+        drawHud(overlayCtx, W, H, point, gpxPoints, idx, overallProgress, totalTime, trimStart, overlayFormat, overlayColor, locationName, displayTime)
+        lastOverlayIdx = idx
+        lastOverlaySec = currentSec
+      }
+
+      // Draw video frame — VideoFrame (decoder path), WebGL shader, or plain video element.
+      // For rotated videos we apply a canvas transform; WebGL is bypassed because the
+      // shader doesn't account for rotation (activeGlOk stays false when swapDims=true).
+      if (frame) {
+        drawRotated(ctx, frame)
+      } else if (activeGlOk) {
+        shader.renderFrame()
+        if (shader.isContextOk()) {
+          ctx.drawImage(glCanvas, 0, 0, W, H)
+        } else {
+          // WebGL context was lost (GPU resource contention) — fall back to plain draw
+          activeGlOk = false
+          drawRotated(ctx, activeVidEl)
+        }
+      } else {
+        drawRotated(ctx, activeVidEl)
+      }
+
+      // Composite cached overlay
+      ctx.drawImage(overlayCanvas, 0, 0, W, H)
+
+      // Draw captions on top (not cached — they update every frame)
+      drawCaptions(ctx, W, H, absTime)
+    }
+
+    // Seek to the first clip start for audio sync (only needed for captureStream path)
+    if (!useStreamCopy) await seekElTo(videoEl, activeClips[0].localStart)
+
+    // ── Fallback audio capture loop (captureStream path) ─────────────────────
     let audioDone = false
-    const audioLoopDone = audioReader
+    const audioLoopDone = (!useStreamCopy && audioReader)
       ? (async () => {
           let firstAudioTs = null
           try {
@@ -233,87 +564,264 @@ export function useVideoExport() {
 
     // ── Encode each clip ──────────────────────────────────────────────────────
     for (const clip of activeClips) {
-      if (!exporting.value || encoderError) break
+      if (!exporting.value) break
+      if (encoderError && !tryRecoverEncoder()) break
 
-      const el = await getSegEl(clip.segmentIdx, clip.src)
+      const videoData = clip.src ? videoExtracted.get(clip.src) : null
 
-      // Re-init WebGL shader when switching video elements
-      if (el !== activeVidEl) {
-        if (activeVidEl) shader.destroy()
-        activeGlOk  = shader.setup(glCanvas, el)
-        if (activeGlOk) shader.setFilter(shaderParams ?? SHADER_PARAMS.none)
-        activeVidEl = el
-      }
-
-      if (useCurve) {
-        // ── Curved speed: seek-based ────────────────────────────────────────
-        const sourceTimes = buildFrameSourceTimes(curveKeyframes, clip.clipDur, fps)
-        let lastSeekTarget = -1
-
-        for (let i = 0; i < sourceTimes.length; i++) {
-          if (!exporting.value || encoderError) break
-          const localT = clip.localStart + Math.min(sourceTimes[i], clip.clipDur - 0.001)
-
-          if (Math.abs(localT - lastSeekTarget) >= frameInterval * 0.25) {
-            await seekElTo(el, localT)
-            lastSeekTarget = localT
-          }
-
-          const absTime     = clip.absStart + (localT - clip.localStart)
-          const overallProg = totalActiveDur > 0 ? (outputTimeOffset + i / fps) / totalActiveDur : 0
-          renderCanvas(absTime, overallProg)
-
-          const ts = Math.round((outputTimeOffset + i / fps) * 1_000_000)
-          const frame = new VideoFrame(canvas, { timestamp: ts })
-          encoder.encode(frame, { keyFrame: frameCount % (fps * 2) === 0 })
-          frame.close()
-          frameCount++
-          exportProgress.value = overallProg
-        }
-
-        outputTimeOffset += sourceTimes.length / fps
-      } else {
-        // ── Normal 1×: RVFC play-based ──────────────────────────────────────
-        await seekElTo(el, clip.localStart)
-        let lastEncodedTime = clip.localStart - frameInterval
+      let usedDecoder = false
+      if (videoData) {
+        // ── Fast VideoDecoder path ──────────────────────────────────────────
+        const frameCountBefore = frameCount
+        let lastDecodedPts = clip.localStart - frameInterval
 
         await new Promise((resolve, reject) => {
-          function frameCallback(_, metadata) {
-            if (!exporting.value || encoderError) { resolve(); return }
-            const vt = metadata.mediaTime
+          const decoder = new VideoDecoder({
+            output: (frame) => {
+              if (!exporting.value) { frame.close(); return }
+              const needsKeyFrame = !!encoderError
+              if (encoderError && !tryRecoverEncoder()) { frame.close(); return }
+              const ptsSec = frame.timestamp / 1_000_000
 
-            if (vt < clip.localStart - frameInterval * 0.5) {
-              el.requestVideoFrameCallback(frameCallback); return
-            }
+              if (ptsSec < clip.localStart - frameInterval * 0.5) { frame.close(); return }
+              if (ptsSec >= clip.localEnd + frameInterval * 0.5)  { frame.close(); return }
+              if (ptsSec - lastDecodedPts < frameInterval - 0.001) { frame.close(); return }
 
-            if (vt - lastEncodedTime >= frameInterval - 0.001) {
-              const elapsed     = Math.max(0, vt - clip.localStart)
+              lastDecodedPts = ptsSec
+              const elapsed     = Math.max(0, ptsSec - clip.localStart)
               const overallProg = totalActiveDur > 0 ? (outputTimeOffset + elapsed) / totalActiveDur : 0
-              const absTime     = clip.absStart + elapsed
-              renderCanvas(absTime, overallProg)
+
+              try { renderCanvas(clip.absStart + elapsed, overallProg, frame) } catch (_) {}
+              frame.close()
 
               const ts = Math.round((outputTimeOffset + elapsed) * 1_000_000)
-              const frame = new VideoFrame(canvas, { timestamp: ts })
-              encoder.encode(frame, { keyFrame: frameCount % (fps * 2) === 0 })
-              frame.close()
-              frameCount++
-              lastEncodedTime      = vt
-              exportProgress.value = overallProg
-            }
+              const vf = new VideoFrame(canvas, { timestamp: ts })
+              try {
+                encoder.encode(vf, { keyFrame: needsKeyFrame || frameCount % (fps * 2) === 0 })
+                frameCount++
+              } catch (e) {
+                encoderError = e
+              } finally {
+                vf.close()
+              }
+              exportProgress.value = Math.min(0.93, overallProg)
+            },
+            error: (e) => { encoderError = e; resolve() },
+          })
 
-            if (vt < clip.localEnd - frameInterval) {
-              el.requestVideoFrameCallback(frameCallback)
-            } else {
-              resolve()
-            }
+          try {
+            decoder.configure({
+              codec:       videoData.codec,
+              codedWidth:  videoData.codedWidth,
+              codedHeight: videoData.codedHeight,
+              ...(videoData.description ? { description: videoData.description } : {}),
+              hardwareAcceleration: 'no-preference',
+            })
+          } catch (e) { decoder.close(); encoderError = e; resolve(); return }
+
+          // Walk backwards to find the last keyframe at or before clip.localStart
+          const { samples } = videoData
+          let startIdx = 0
+          for (let i = 0; i < samples.length; i++) {
+            if (samples[i].cts / samples[i].timescale > clip.localStart + 0.001) break
+            if (samples[i].is_sync) startIdx = i
           }
 
-          el.requestVideoFrameCallback(frameCallback)
-          el.play().catch(reject)
+          for (let i = startIdx; i < samples.length; i++) {
+            const s = samples[i]
+            if (s.cts / s.timescale > clip.localEnd + 1.0) break
+            decoder.decode(new EncodedVideoChunk({
+              type:      s.is_sync ? 'key' : 'delta',
+              timestamp: Math.round((s.cts / s.timescale) * 1_000_000),
+              duration:  Math.round((s.duration / s.timescale) * 1_000_000),
+              data:      s.data,
+            }))
+          }
+
+          decoder.flush().then(() => { decoder.close(); resolve() }).catch(e => { encoderError = e; resolve() })
         })
 
-        el.pause()
-        outputTimeOffset += clip.clipDur
+        if (frameCount > frameCountBefore) {
+          usedDecoder = true
+          outputTimeOffset += clip.clipDur
+        } else {
+          // Decoder produced no frames — reset and fall through to RVFC path
+          encoderError = null
+          if (encoder.state === 'closed') encoder = makeVideoEncoder()
+        }
+      }
+
+      if (!usedDecoder) {
+        // ── Legacy path: WebGL shader + seek/RVFC ──────────────────────────
+        const el = await getSegEl(clip.segmentIdx, clip.src)
+
+        if (el !== activeVidEl) {
+          if (activeVidEl) shader.destroy()
+          // Skip WebGL for rotated videos — the shader textures from the coded
+          // (unrotated) frame and would need UV-level rotation support.
+          activeGlOk  = swapDims ? false : shader.setup(glCanvas, el)
+          if (activeGlOk) shader.setFilter(shaderParams ?? SHADER_PARAMS.none)
+          activeVidEl = el
+        }
+
+        if (useCurve) {
+          // ── Curved speed: seek-based ────────────────────────────────────────
+          const sourceTimes = buildFrameSourceTimes(curveKeyframes, clip.clipDur, fps)
+          let lastSeekTarget = -1
+
+          for (let i = 0; i < sourceTimes.length; i++) {
+            if (!exporting.value) break
+            if (encoderError && !tryRecoverEncoder()) break
+            const localT = clip.localStart + Math.min(sourceTimes[i], clip.clipDur - 0.001)
+
+            if (Math.abs(localT - lastSeekTarget) >= frameInterval * 0.25) {
+              await seekElTo(el, localT)
+              lastSeekTarget = localT
+            }
+
+            const absTime     = clip.absStart + (localT - clip.localStart)
+            const overallProg = totalActiveDur > 0 ? (outputTimeOffset + i / fps) / totalActiveDur : 0
+            renderCanvas(absTime, overallProg)
+
+            const ts = Math.round((outputTimeOffset + i / fps) * 1_000_000)
+            const frame = new VideoFrame(canvas, { timestamp: ts })
+            encoder.encode(frame, { keyFrame: frameCount % (fps * 2) === 0 })
+            frame.close()
+            frameCount++
+            exportProgress.value = Math.min(0.93, overallProg)
+          }
+
+          outputTimeOffset += sourceTimes.length / fps
+        } else {
+          // ── Normal 1×: RVFC play-based ──────────────────────────────────────
+          await seekElTo(el, clip.localStart)
+          let lastEncodedTime = clip.localStart - frameInterval
+
+          await new Promise((resolve, reject) => {
+            function frameCallback(_, metadata) {
+              if (!exporting.value) { resolve(); return }
+              if (encoderError && !tryRecoverEncoder()) { resolve(); return }
+              const vt = metadata.mediaTime
+
+              if (vt < clip.localStart - frameInterval * 0.5) {
+                el.requestVideoFrameCallback(frameCallback); return
+              }
+
+              if (vt - lastEncodedTime >= frameInterval - 0.001) {
+                const elapsed     = Math.max(0, vt - clip.localStart)
+                const overallProg = totalActiveDur > 0 ? (outputTimeOffset + elapsed) / totalActiveDur : 0
+                const absTime     = clip.absStart + elapsed
+                try { renderCanvas(absTime, overallProg) } catch (_) {}
+
+                const ts = Math.round((outputTimeOffset + elapsed) * 1_000_000)
+                let frame = null
+                try {
+                  frame = new VideoFrame(canvas, { timestamp: ts })
+                  encoder.encode(frame, { keyFrame: frameCount % (fps * 2) === 0 })
+                  frameCount++
+                  lastEncodedTime      = vt
+                  exportProgress.value = Math.min(0.93, overallProg)
+                } catch (e) {
+                  encoderError = e
+                } finally {
+                  frame?.close()
+                }
+              }
+
+              if (vt < clip.localEnd - frameInterval) {
+                el.requestVideoFrameCallback(frameCallback)
+              } else {
+                resolve()
+              }
+            }
+
+            el.addEventListener('ended', resolve, { once: true })
+            el.requestVideoFrameCallback(frameCallback)
+            el.play().catch(reject)
+          })
+
+          el.pause()
+          outputTimeOffset += clip.clipDur
+        }
+      } // end legacy block
+    }
+
+    // ── Point 3a: PCM fallback audio — AudioContext decode → AudioEncoder ───────
+    if (!useStreamCopy && pcmAudioBuffer && !encoderError) {
+      const pcmEnc = new AudioEncoder({
+        output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
+        error:  () => {},
+      })
+      pcmEnc.configure({ codec: 'mp4a.40.2', sampleRate: AUDIO_SAMPLE_RATE, numberOfChannels: AUDIO_CHANNELS, bitrate: 128_000 })
+
+      const FRAME  = 1024
+      const sr     = pcmAudioBuffer.sampleRate
+      const nch    = pcmAudioBuffer.numberOfChannels
+      let timeOffset = 0
+
+      for (const clip of activeClips) {
+        const startFrame = Math.round(clip.localStart * sr)
+        const endFrame   = Math.min(Math.round(clip.localEnd * sr), pcmAudioBuffer.length)
+
+        for (let i = startFrame; i < endFrame; i += FRAME) {
+          const len  = Math.min(FRAME, endFrame - i)
+          const data = new Float32Array(len * nch)
+          for (let ch = 0; ch < nch; ch++) {
+            data.set(pcmAudioBuffer.getChannelData(ch).subarray(i, i + len), ch * len)
+          }
+          const ad = new AudioData({
+            format:           'f32-planar',
+            sampleRate:       sr,
+            numberOfFrames:   len,
+            numberOfChannels: nch,
+            timestamp:        Math.round((timeOffset + (i - startFrame) / sr) * 1_000_000),
+            data,
+          })
+          pcmEnc.encode(ad)
+          ad.close()
+        }
+        timeOffset += clip.clipDur
+      }
+      await pcmEnc.flush()
+      pcmEnc.close()
+    }
+
+    // ── Point 3b: stream-copy audio — splice encoded AAC frames directly ───────
+    if (useStreamCopy && !encoderError) {
+      let audioTimeOffset = 0
+      let metaWritten = false
+
+      for (const clip of activeClips) {
+        const audioData = audioExtracted.get(clip.segmentIdx)
+        if (!audioData) { audioTimeOffset += clip.clipDur; continue }
+
+        const { info, samples, description } = audioData
+        for (const sample of samples) {
+          const pts = sample.cts / sample.timescale
+          if (pts < clip.localStart - 0.001) continue
+          if (pts >= clip.localEnd)          break
+
+          const outputTs  = (audioTimeOffset + pts - clip.localStart) * 1_000_000
+          const outputDur = sample.duration / sample.timescale * 1_000_000
+
+          const chunk = new EncodedAudioChunk({
+            type:      sample.is_sync ? 'key' : 'delta',
+            timestamp: Math.round(outputTs),
+            duration:  Math.round(outputDur),
+            data:      sample.data,
+          })
+
+          muxer.addAudioChunk(chunk, !metaWritten ? {
+            decoderConfig: {
+              codec:            info.codec,
+              sampleRate:       info.sampleRate,
+              numberOfChannels: info.numberOfChannels,
+              ...(description ? { description } : {}),
+            },
+          } : undefined)
+          metaWritten = true
+        }
+        audioTimeOffset += clip.clipDur
       }
     }
 
@@ -330,18 +838,23 @@ export function useVideoExport() {
     audioReader?.cancel().catch(() => {})
     await audioLoopDone
 
-    if (encoderError) throw encoderError
+    if (encoderError && !tryRecoverEncoder()) throw encoderError
 
+    exportProgress.value = 0.95
     await encoder.flush()
     encoder.close()
 
-    if (audioEncoder) {
+    exportProgress.value = 0.97
+    if (!useStreamCopy && audioEncoder && audioEncoder.state !== 'closed') {
       await audioEncoder.flush()
       audioEncoder.close()
     }
 
+    exportProgress.value = 0.99
     shader.destroy()
     muxer.finalize()
+
+    exportProgress.value = 1
 
     // Trigger download — anchor must be in DOM for Chrome 65+
     const blob = new Blob([target.buffer], { type: 'video/mp4' })
@@ -354,8 +867,6 @@ export function useVideoExport() {
     a.click()
     document.body.removeChild(a)
     setTimeout(() => URL.revokeObjectURL(url), 60_000)
-
-    exportProgress.value = 1
   }
 
   return { exporting, exportProgress, exportError, startExport, cancel }
@@ -439,13 +950,17 @@ function hexToRgba(hex, alpha) {
 }
 
 function drawMapInset(ctx, W, H, pts, animIdx, maxSpeed, segStart = 0) {
-  const s  = (W / 1920) * hudScaleFor(W, H)
+  const s  = (W / 1280) * hudScaleFor(W, H)   // layout-level scale (gap, border)
   // Match preview CSS: width: 21%, aspect-ratio: 4/3, top: 4px, right: 4px
   const IW = Math.round(W * 0.21)
   const IH = Math.round(IW * 3 / 4)
   const gap = Math.max(4, Math.round(4 * (W / 1920)))
   const IX = W - IW - gap
   const IY = gap
+
+  // Scale internal elements proportional to the inset width so they match the
+  // preview canvas which uses fixed pixel values on a ~76 px reference inset.
+  const ms = Math.min(IW / 76, 5)
 
   const cp   = pts[animIdx]
   const latR = INSET_LAT_R
@@ -469,11 +984,11 @@ function drawMapInset(ctx, W, H, pts, animIdx, maxSpeed, segStart = 0) {
 
   // Background + clip
   ctx.save()
-  rrect(ctx, IX, IY, IW, IH, 8 * s)
+  rrect(ctx, IX, IY, IW, IH, Math.round(6 * s))  // CSS border-radius: 6px
   ctx.fillStyle = 'rgba(0,0,0,0.6)'
   ctx.fill()
   ctx.strokeStyle = 'rgba(255,255,255,0.18)'
-  ctx.lineWidth   = 0.5 * s
+  ctx.lineWidth   = Math.max(0.5, 0.5 * s)
   ctx.stroke()
   ctx.clip()
 
@@ -483,14 +998,14 @@ function drawMapInset(ctx, W, H, pts, animIdx, maxSpeed, segStart = 0) {
   ctx.rotate(-heading)
   ctx.translate(-CX, -CY)
 
-  // Full faint trail
+  // Full faint trail — line widths scale with inset size, not global video width
   ctx.beginPath()
   pts.forEach((p, i) => {
     const [x, y] = toXY(p.lat, p.lon)
     i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
   })
   ctx.strokeStyle = 'rgba(255,255,255,0.14)'
-  ctx.lineWidth   = 1.5 * s
+  ctx.lineWidth   = 1.5 * ms
   ctx.stroke()
 
   // Speed-colored traveled segment
@@ -503,26 +1018,26 @@ function drawMapInset(ctx, W, H, pts, animIdx, maxSpeed, segStart = 0) {
     const [x1, y1] = toXY(pts[i].lat,     pts[i].lon)
     ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1)
     ctx.strokeStyle = `rgb(${r},${g},${b})`
-    ctx.lineWidth   = 2.5 * s
+    ctx.lineWidth   = 2.5 * ms
     ctx.stroke()
   }
 
   ctx.restore()  // undo rotation
 
-  // Position marker at inset center (always centered regardless of heading)
-  ctx.beginPath(); ctx.arc(CX, CY, 4 * s, 0, Math.PI * 2)
+  // Position marker — matches preview: inner r=4.5, outer r=8, stroke 1.5
+  ctx.beginPath(); ctx.arc(CX, CY, 4.5 * ms, 0, Math.PI * 2)
   ctx.fillStyle = '#fff'; ctx.fill()
-  ctx.beginPath(); ctx.arc(CX, CY, 7 * s, 0, Math.PI * 2)
-  ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 1.5 * s; ctx.stroke()
+  ctx.beginPath(); ctx.arc(CX, CY, 8 * ms, 0, Math.PI * 2)
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 1.5 * ms; ctx.stroke()
 
   ctx.restore()  // undo clip
 
-  // North indicator — small arrow in top-right of inset, rotates to show true north
+  // North indicator — matches preview: arrow at (W-12, 12), 8px tall, 3.5px half-width
   ctx.save()
-  ctx.translate(IX + IW - Math.round(11 * s), IY + Math.round(11 * s))
+  ctx.translate(IX + IW - Math.round(12 * ms), IY + Math.round(12 * ms))
   ctx.rotate(-heading)
   ctx.beginPath()
-  ctx.moveTo(0, -8 * s); ctx.lineTo(-3.5 * s, 3 * s); ctx.lineTo(0, 1 * s); ctx.lineTo(3.5 * s, 3 * s)
+  ctx.moveTo(0, -8 * ms); ctx.lineTo(-3.5 * ms, 3 * ms); ctx.lineTo(0, 1 * ms); ctx.lineTo(3.5 * ms, 3 * ms)
   ctx.closePath()
   ctx.fillStyle = 'rgba(255,255,255,0.55)'
   ctx.fill()
@@ -535,22 +1050,14 @@ function hudScaleFor(W, H) {
   return Math.max(1, Math.sqrt(H / W) / Math.sqrt(9 / 16))
 }
 
-function drawHud(ctx, W, H, point, pts, animIdx, progress, totalTime, overlayFormat = 'classic', overlayColor = '#f59e0b', locationName = '') {
+function drawHud(ctx, W, H, point, pts, animIdx, progress, totalTime, trimStart = 0, overlayFormat = 'classic', overlayColor = '#f59e0b', locationName = '', displayTime = null) {
   if (overlayFormat === 'minimal') { drawHudMinimal(ctx, W, H, point, pts, progress, overlayColor, locationName); return }
-  if (overlayFormat === 'gopro')   { drawHudGoPro(ctx, W, H, point, pts, animIdx, progress, overlayColor, locationName); return }
+  if (overlayFormat === 'gopro')   { drawHudGoPro(ctx, W, H, point, pts, animIdx, progress, totalTime, trimStart, overlayColor, locationName, displayTime); return }
   if (overlayFormat === 'sport')   { drawHudSport(ctx, W, H, point, progress, overlayColor, locationName); return }
   if (overlayFormat === 'cycling') { drawHudCycling(ctx, W, H, point, pts, animIdx, progress, overlayColor, locationName); return }
-  const s = (W / 1080) * hudScaleFor(W, H)
+  const s = (W / 720) * hudScaleFor(W, H)
   ctx.save()
   ctx.font = `700 ${Math.round(14 * s)}px -apple-system, BlinkMacSystemFont, sans-serif`
-
-  // ── Top progress bar ─────────────────────────────────────────────────────────
-  const barH = Math.max(3, Math.round(4 * s))
-  ctx.fillStyle = 'rgba(255,255,255,0.12)'
-  ctx.fillRect(0, 0, W, barH)
-  const fillW = W * Math.max(0, Math.min(1, progress))
-  ctx.fillStyle = overlayColor
-  ctx.fillRect(0, 0, fillW, barH)
 
   // ── Bottom gradient ──────────────────────────────────────────────────────────
   // CSS .hud-bottom-row: bottom:0; height:30%; gradient transparent→opaque at 55%
@@ -904,7 +1411,7 @@ function copyAudioData(src, timestamp) {
 
 // ─── Minimal HUD ────────────────────────────────────────────────────────────
 function drawHudMinimal(ctx, W, H, point, pts, progress, overlayColor = '#f59e0b', locationName = '') {
-  const s = (W / 1080) * hudScaleFor(W, H)
+  const s = (W / 720) * hudScaleFor(W, H)
   ctx.save()
   const FONT   = '-apple-system, BlinkMacSystemFont, sans-serif'
   const AMBER  = overlayColor
@@ -918,11 +1425,6 @@ function drawHudMinimal(ctx, W, H, point, pts, progress, overlayColor = '#f59e0b
     ctx.fillText(str, x, y)
     ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'
   }
-
-  // Progress bar
-  const barH = Math.max(3, Math.round(4 * s))
-  ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fillRect(0, 0, W, barH)
-  ctx.fillStyle = AMBER; ctx.fillRect(0, 0, W * Math.max(0, Math.min(1, progress)), barH)
 
   // Bottom gradient
   const grad = ctx.createLinearGradient(0, H * 0.7, 0, H)
@@ -987,9 +1489,9 @@ function fmtDMS(val, posChar, negChar) {
   return `${d}°${String(m).padStart(2,'0')}'${s}" ${val >= 0 ? posChar : negChar}`
 }
 
-function drawHudGoPro(ctx, W, H, point, pts, animIdx, progress, overlayColor = '#f59e0b', locationName = '') {
+function drawHudGoPro(ctx, W, H, point, pts, animIdx, progress, totalTime, trimStart, overlayColor = '#f59e0b', locationName = '', displayTime = null) {
   const hs = hudScaleFor(W, H)
-  const s = (W / 1080) * hs
+  const s = (W / 720) * hs
   ctx.save()
   const FONT  = '-apple-system, BlinkMacSystemFont, sans-serif'
   const AMBER = overlayColor
@@ -1003,11 +1505,6 @@ function drawHudGoPro(ctx, W, H, point, pts, animIdx, progress, overlayColor = '
     ctx.fillText(str, x, y)
     ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'
   }
-
-  // Progress bar
-  const barH = Math.max(3, Math.round(4 * s))
-  ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fillRect(0, 0, W, barH)
-  ctx.fillStyle = AMBER; ctx.fillRect(0, 0, W * Math.max(0, Math.min(1, progress)), barH)
 
   // GPS coordinates (top center)
   const latStr = fmtDMS(point?.lat, 'N', 'S')
@@ -1051,6 +1548,17 @@ function drawHudGoPro(ctx, W, H, point, pts, animIdx, progress, overlayColor = '
   // Elevation
   text('ELEVATION', lx + Math.round(22 * s), topPanelY + panelGap,                      9,  700, DIM,   'left', 'top')
   text(eleStr,      lx + Math.round(22 * s), topPanelY + panelGap + Math.round(15 * s), 20, 700, WHITE, 'left', 'top')
+
+  // Time and date — use precomputed displayTime (absTime + GPS offset) for accuracy
+  const rawTime = displayTime
+    ?? (point?.time instanceof Date ? point.time : point?.time ? new Date(point.time) : null)
+  if (rawTime && !isNaN(rawTime)) {
+    const timeStr = rawTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+    const dateStr = rawTime.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    const dtY = topPanelY + panelGap * 2
+    text(timeStr, lx + Math.round(22 * s), dtY,                       14, 700, WHITE, 'left', 'top')
+    text(dateStr, lx + Math.round(22 * s), dtY + Math.round(18 * s),   9, 700, DIM,   'left', 'top')
+  }
 
   // Small triangle icons for each stat
   function drawTriangle(x, y, sz, filled) {
@@ -1134,7 +1642,7 @@ function drawHudGoPro(ctx, W, H, point, pts, animIdx, progress, overlayColor = '
 // ─── Sport HUD ───────────────────────────────────────────────────────────────
 function drawHudSport(ctx, W, H, point, progress, overlayColor = '#f59e0b', locationName = '') {
   const hs = hudScaleFor(W, H)
-  const s = (W / 1080) * hs
+  const s = (W / 720) * hs
   ctx.save()
   const FONT = '-apple-system, BlinkMacSystemFont, sans-serif'
   const CYAN = overlayColor
@@ -1148,11 +1656,6 @@ function drawHudSport(ctx, W, H, point, progress, overlayColor = '#f59e0b', loca
     ctx.fillText(str, x, y)
     ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'
   }
-
-  // Progress bar
-  const barH = Math.max(3, Math.round(4 * s))
-  ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fillRect(0, 0, W, barH)
-  ctx.fillStyle = CYAN; ctx.fillRect(0, 0, W * Math.max(0, Math.min(1, progress)), barH)
 
   // Distance (top-left)
   const dist = ((point?.cumDist ?? 0) / 1000).toFixed(1)
@@ -1234,7 +1737,7 @@ function drawHudSport(ctx, W, H, point, progress, overlayColor = '#f59e0b', loca
 // ─── Cycling HUD ─────────────────────────────────────────────────────────────
 function drawHudCycling(ctx, W, H, point, pts, animIdx, progress, overlayColor = '#f59e0b', locationName = '') {
   const hs = hudScaleFor(W, H)
-  const s = (W / 1080) * hs
+  const s = (W / 720) * hs
   ctx.save()
   const FONT   = '-apple-system, BlinkMacSystemFont, sans-serif'
   const TEAL   = overlayColor
@@ -1248,11 +1751,6 @@ function drawHudCycling(ctx, W, H, point, pts, animIdx, progress, overlayColor =
     ctx.fillText(str, x, y)
     ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'
   }
-
-  // Progress bar
-  const barH = Math.max(3, Math.round(4 * s))
-  ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fillRect(0, 0, W, barH)
-  ctx.fillStyle = TEAL; ctx.fillRect(0, 0, W * Math.max(0, Math.min(1, progress)), barH)
 
   // Top-left: ELEVATION label + value
   const lx = Math.round(20 * s), ty = Math.round(14 * s)
@@ -1341,87 +1839,56 @@ function drawHudCycling(ctx, W, H, point, pts, animIdx, progress, overlayColor =
 }
 
 // ─── Location pill ────────────────────────────────────────────────────────────
-// Mirrors the CSS .hud-location pill with layout-aware positioning.
+// Mirrors the CSS .hud-location — each comma-separated part on its own line.
 function drawLocationPill(ctx, W, H, s, locationName, overlayFormat, overlayColor = '#00ff88') {
   if (!locationName) return
 
-  const FONT = '-apple-system, BlinkMacSystemFont, sans-serif'
+  const parts = locationName.split(',').map(p => p.trim()).filter(Boolean)
+
+  const FONT     = '-apple-system, BlinkMacSystemFont, sans-serif'
   const fontSize = Math.round(9 * s)
-  const pinW  = Math.round(9 * s)
-  const pinH  = Math.round(12 * s)
-  const padH  = Math.round(3 * s)
-  const padL  = Math.round(6 * s)
-  const padR  = Math.round(9 * s)
-  const gap   = Math.round(4 * s)
-  const maxW  = W * 0.40
+  const lineH    = Math.round(fontSize * 1.3)   // CSS line-height: 1.3
+  const lineGap  = Math.round(1 * s)            // CSS gap: 1px between lines
+  const pinW     = Math.round(9 * s)
+  const pinH     = Math.round(12 * s)
+  const padH     = Math.round(3 * s)
+  const padL     = Math.round(6 * s)
+  const padR     = Math.round(9 * s)
+  const gap      = Math.round(4 * s)
+  const maxLineW = W * 0.40 - pinW - gap - padL - padR
 
   ctx.save()
   ctx.font = `600 ${fontSize}px ${FONT}`
-  const rawTextW = ctx.measureText(locationName).width
-  const textW    = Math.min(rawTextW, maxW - pinW - gap - padL - padR)
-  const pillW    = padL + pinW + gap + textW + padR
-  const pillH    = Math.max(pinH, fontSize) + padH * 2
 
-  // Position by layout — matches the Vue locationStyle computed
-  let px, py
-  switch (overlayFormat) {
-    case 'classic':
-      px = W * 0.24
-      py = H * 0.69 - pillH  // just above the 31% bottom gap (bottom: 31%)
-      break
-    case 'minimal':
-      px = Math.round(8 * s)
-      py = Math.round(12 * s)
-      break
-    case 'gopro':
-    case 'sport':
-      px = W - pillW - W * 0.02
-      py = H * 0.92 - pillH  // bottom: 8%
-      break
-    case 'cycling':
-      px = W - pillW - W * 0.02
-      py = H * 0.96 - pillH  // bottom: 4%
-      break
-    default:
-      px = Math.round(8 * s)
-      py = H - pillH - Math.round(8 * s)
-  }
+  // Measure each line and clamp to maxLineW
+  const lineWidths = parts.map(p => Math.min(ctx.measureText(p).width, maxLineW))
+  const textW      = Math.max(...lineWidths)
+  const textBlockH = parts.length * lineH + (parts.length - 1) * lineGap
+  const pillW      = padL + pinW + gap + textW + padR
+  const pillH      = Math.max(pinH, textBlockH) + padH * 2
+
+  // Always bottom-left — matches Vue locationStyle: { bottom: '8px', left: '8px' }
+  const px = Math.round(8 * s)
+  const py = H - pillH - Math.round(8 * s)
 
   // Pill background
-  const radius = pillH / 2
+  const radius = Math.round(4 * s)   // CSS border-radius: 4px
   ctx.globalAlpha = 0.85
   ctx.fillStyle = 'rgba(0,0,0,0.55)'
   rrect(ctx, px, py, pillW, pillH, radius)
   ctx.fill()
   ctx.strokeStyle = 'rgba(255,255,255,0.18)'
-  ctx.lineWidth = Math.max(0.5, Math.round(0.5 * s))
+  ctx.lineWidth = Math.max(0.5, 0.5 * s)
   ctx.stroke()
   ctx.globalAlpha = 1
 
-  // Pin icon (same SVG path as the Vue component)
-  const pinX = px + padL
-  const pinY = py + (pillH - pinH) / 2
-  const ps   = pinH / 16   // path is drawn in a 12×16 viewBox → scale to pinH
-  ctx.save()
-  ctx.translate(pinX, pinY)
-  ctx.scale(ps, ps)
-  ctx.beginPath()
-  // Outer teardrop
-  ctx.moveTo(6, 0)
-  ctx.bezierCurveTo(2.686, 0, 0, 2.686, 0, 6)
-  ctx.bezierCurveTo(0, 10, 6, 16, 6, 16)
-  ctx.bezierCurveTo(6, 16, 12, 10, 12, 6)
-  ctx.bezierCurveTo(12, 2.686, 9.314, 0, 6, 0)
-  ctx.closePath()
-  // Inner circle hole (counterclockwise = subtract)
-  ctx.arc(6, 6, 2, 0, Math.PI * 2, true)
-  ctx.restore()
-  ctx.fillStyle = 'var(--oc, #f59e0b)'   // fallback for OffscreenCanvas
-  ctx.shadowColor = 'rgba(0,0,0,0.7)'
-  ctx.shadowBlur  = Math.round(3 * s)
+  // Pin icon — aligns to top of text block (flex-start)
+  const pinX    = px + padL
+  const textX   = px + padL + pinW + gap
+  const textTopY = py + (pillH - textBlockH) / 2
+  const pinY    = textTopY + (lineH - pinH) / 2  // vertically center pin within first line
+  const ps      = pinH / 16                       // 12×16 viewBox → scale to pinH
 
-  // Re-draw pin without transform for OffscreenCanvas (no CSS vars)
-  const pinColor = overlayColor
   ctx.save()
   ctx.translate(pinX, pinY)
   ctx.scale(ps, ps)
@@ -1433,24 +1900,27 @@ function drawLocationPill(ctx, W, H, s, locationName, overlayFormat, overlayColo
   ctx.bezierCurveTo(12, 2.686, 9.314, 0, 6, 0)
   ctx.closePath()
   ctx.arc(6, 6, 2, 0, Math.PI * 2, true)
-  ctx.fillStyle = pinColor
+  ctx.fillStyle = overlayColor
+  ctx.shadowColor = 'rgba(0,0,0,0.7)'
+  ctx.shadowBlur  = Math.round(3 * s) / ps
   ctx.fill('evenodd')
   ctx.restore()
   ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'
 
-  // Location text (clipped to max width)
+  // Each comma-part on its own line
   ctx.save()
-  const textX = px + padL + pinW + gap
-  const textY = py + pillH / 2
   ctx.rect(textX, py, textW + 1, pillH)
   ctx.clip()
   ctx.font = `600 ${fontSize}px ${FONT}`
   ctx.fillStyle = 'rgba(255,255,255,0.85)'
   ctx.textAlign = 'left'
-  ctx.textBaseline = 'middle'
+  ctx.textBaseline = 'top'
   ctx.shadowColor = 'rgba(0,0,0,0.85)'
   ctx.shadowBlur  = Math.round(3 * s)
-  ctx.fillText(locationName, textX, textY)
+  parts.forEach((part, i) => {
+    const lineY = textTopY + i * (lineH + lineGap)
+    ctx.fillText(part, textX, lineY)
+  })
   ctx.restore()
 }
 
