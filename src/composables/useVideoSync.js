@@ -198,7 +198,7 @@ export function useVideoSync(gpxPoints) {
   let lastDuration = 1
 
   watch([trimStart, trimEnd], () => {
-    if (videoSrc.value) _applyTime(lastAbsTime, lastDuration)
+    if (videoSrc.value) _applyTime(currentAbsTime.value, lastDuration)
   })
 
   // Re-apply when the offset changes (slider or manual start-time entry).
@@ -210,7 +210,7 @@ export function useVideoSync(gpxPoints) {
     const { start, end } = gpxWindowIdx.value
     trimStart.value = start
     trimEnd.value   = end
-    _applyTime(lastAbsTime, lastDuration)
+    _applyTime(currentAbsTime.value, lastDuration)
   }, { flush: 'sync' })
 
   // GPX window (highlighted region on the elevation strip)
@@ -230,6 +230,8 @@ export function useVideoSync(gpxPoints) {
         const mid = (lo + hi) >> 1
         pts[mid].time.getTime() < ms ? (lo = mid + 1) : (hi = mid)
       }
+      // Snap to nearest neighbour so sparse GPS tracks don't skip ahead.
+      if (lo > 0 && pts[lo].time.getTime() - ms > ms - pts[lo - 1].time.getTime()) lo--
       return Math.max(0, Math.min(N, lo))
     }
 
@@ -244,7 +246,8 @@ export function useVideoSync(gpxPoints) {
     const pts = gpxPoints.value
     if (!pts.length || !pts[0].time) return
     // totalOffset = (date - gpxStart) / 1000 - videoAbsTime
-    const newOffset = (date.getTime() - pts[0].time.getTime()) / 1000 - lastAbsTime
+    // Use currentAbsTime (updated by seeks) rather than lastAbsTime (only from timeupdate).
+    const newOffset = (date.getTime() - pts[0].time.getTime()) / 1000 - currentAbsTime.value
     autoOffsetSec.value    = newOffset
     manualOffsetSec.value  = 0
     autoDetected.value     = false
@@ -360,37 +363,36 @@ export function useVideoSync(gpxPoints) {
     const vEnd   = Math.max(vStart + 0.001, videoTrimEnd.value)
     progress.value = Math.max(0, Math.min((absTime - vStart) / (vEnd - vStart), 1))
 
-    // Zero-width GPS window: video offset places it outside the GPS recording range,
-    // or GPS has too few points to span the video. Show data at trimStart so the
-    // overlay reflects the current GPS window position when the user adjusts it.
-    if (tEnd <= tStart) {
-      animIdx.value = Math.max(0, Math.min(tStart, pts.length - 1))
-      return
-    }
-
-    let idx
     if (pts[0].time) {
+      // GPS has timestamps — binary search for the exact GPS point at this video time.
+      // Do NOT clamp to [tStart, tEnd]: the window bounds are for UI highlighting only,
+      // clamping caused animIdx to freeze at the window edge after a sync.
       const targetMs = pts[0].time.getTime() + (totalOffsetSec.value + absTime) * 1000
       let lo = 0, hi = pts.length - 1
       while (lo < hi) {
         const mid = (lo + hi) >> 1
         pts[mid].time.getTime() < targetMs ? (lo = mid + 1) : (hi = mid)
       }
-      idx = lo
+      // Binary search returns the first point >= targetMs (upper bound).
+      // For sparse GPS tracks the next point may be tens of seconds ahead.
+      // Snap to whichever neighbour is closer in time so the gauge reflects
+      // what was actually happening at this video frame.
+      if (lo > 0 && pts[lo].time.getTime() - targetMs > targetMs - pts[lo - 1].time.getTime()) {
+        lo--
+      }
+      animIdx.value = Math.max(0, Math.min(lo, pts.length - 1))
     } else {
-      const totalDur = videoDuration.value || Math.max(1, localDurationSec)
-      idx = Math.max(0, Math.min(
-        Math.round((absTime / totalDur) * (pts.length - 1)),
-        pts.length - 1
-      ))
-    }
-
-    if (idx < tStart || idx > tEnd) {
+      // No timestamps: advance proportionally through the GPS window (or full range
+      // when the window is empty because sync hasn't been established yet).
+      const total = pts.length - 1
+      if (total <= 0) return
       const rel = Math.max(0, Math.min((absTime - vStart) / (vEnd - vStart), 1))
-      idx = Math.round(tStart + rel * (tEnd - tStart))
+      if (tEnd > tStart) {
+        animIdx.value = Math.max(tStart, Math.min(Math.round(tStart + rel * (tEnd - tStart)), tEnd))
+      } else {
+        animIdx.value = Math.round(rel * total)
+      }
     }
-
-    animIdx.value = Math.max(tStart, Math.min(idx, tEnd))
   }
 
   // Convert a GPX index to an absolute timeline time (for seek-on-trim-drag)

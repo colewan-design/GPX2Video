@@ -60,7 +60,7 @@ import { ref, onBeforeUnmount } from 'vue'
 import { useDraggedVideo } from '../composables/useDraggedVideo.js'
 
 
-const emit = defineEmits(['file', 'append', 'select'])
+const emit = defineEmits(['file', 'append', 'select', 'clear'])
 const { draggedFile, isDragging } = useDraggedVideo()
 
 const fileInput = ref(null)
@@ -110,14 +110,20 @@ function selectVideo(i) {
 }
 
 function removeVideo(i) {
+  const wasActive = i === activeIdx.value
   URL.revokeObjectURL(videos.value[i].url)
   videos.value.splice(i, 1)
   if (videos.value.length === 0) {
     activeIdx.value = 0
-    emit('file', null)
+    emit('clear')
+  } else if (wasActive) {
+    // Removed the selected clip — clear the stage; user can click another to resume
+    activeIdx.value = -1
+    emit('clear')
   } else {
-    activeIdx.value = Math.min(activeIdx.value, videos.value.length - 1)
-    emit('select', activeIdx.value)
+    // Adjust index if a clip before the active one was removed
+    if (i < activeIdx.value) activeIdx.value--
+    // Stage stays on the currently-playing clip — no emit needed
   }
 }
 

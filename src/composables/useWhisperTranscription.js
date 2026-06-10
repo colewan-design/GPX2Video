@@ -13,6 +13,12 @@ function getWorker() {
   return _worker
 }
 
+// Terminate the worker to free WASM model memory (~75–466 MB).
+// Called before video export to prevent GPU/memory contention with VideoEncoder.
+export function releaseWhisperWorker() {
+  if (_worker) { _worker.terminate(); _worker = null; _workerModel = null }
+}
+
 export function useWhisperTranscription() {
   const status    = ref('idle')    // idle | downloading | transcribing | done | error
   const progress  = ref(0)         // 0–1 during download

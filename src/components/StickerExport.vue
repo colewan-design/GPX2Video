@@ -1386,6 +1386,10 @@ function render(ctx, pts, stats, name, accent, W, H, orient, format) {
   const { r: ar, g: ag, b: ab } = hexRgb(accent)
   const theme = buildTheme(format, W, H, ctx, accent, ar, ag, ab)
 
+  if (format === 'classic') {
+    renderClassic(ctx, pts, stats, name, accent, W, H, orient, theme, ar, ag, ab)
+    return
+  }
   if (format === 'minimal') {
     renderMinimal(ctx, pts, stats, name, accent, W, H, orient, theme)
     return
@@ -1551,17 +1555,16 @@ function buildTheme(format, W, H, ctx, accent, ar, ag, ab) {
         shadowColor: 'rgba(0,0,0,0.90)',
       }
 
-    default: // classic — transparent bg
+    default: // classic — clean athlete top-bar
       return {
-        headerBg:     'rgba(0,0,0,0.62)',
-        statsBg:      'rgba(0,0,0,0.62)',
+        headerBg:     'rgba(8,9,12,0.82)',
         textPrimary:  '#fff',
-        acDim:        `rgba(${ar},${ag},${ab},0.75)`,
-        divider:      'rgba(255,255,255,0.08)',
+        acDim:        `rgba(${ar},${ag},${ab},0.85)`,
+        divider:      'rgba(255,255,255,0.12)',
         statLabel:    'rgba(255,255,255,0.38)',
         shadowColor:  'rgba(0,0,0,0.95)',
         routeHalo:    'rgba(0,0,0,0.45)',
-        sparkBacking: true,
+        sparkBacking: false,
       }
   }
 }
@@ -1668,6 +1671,142 @@ function renderFull(ctx, pts, stats, name, accent, W, H, orient, theme, ar, ag, 
   }
 
   drawFooter(ctx, W, H)
+}
+
+// ── Classic layout — clean athlete top-bar ────────────────────────────────────
+// Single top bar: title + short date, then 4 inline stats (distance hero-sized).
+// Mini-map in bottom-left. Watermark in bottom-right corner.
+
+function renderClassic(ctx, pts, stats, name, accent, W, H, orient, theme, ar, ag, ab) {
+  const isLS = orient === 'landscape'
+  const REF  = Math.min(W, H)
+  const PAD  = Math.round(REF * 0.042)
+  const shadow   = (b = 8) => { ctx.shadowColor = 'rgba(0,0,0,0.92)'; ctx.shadowBlur = b }
+  const noShadow = ()      => { ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0 }
+
+  // ── Top bar: two rows ───────────────────────────────────────────────────────
+  const TITLE_H = Math.round(REF * (isLS ? 0.082 : 0.072))
+  const STATS_H = Math.round(REF * (isLS ? 0.118 : 0.106))
+  const BAR_H   = TITLE_H + STATS_H
+  const BAR_R   = Math.round(REF * 0.033)
+
+  // Backdrop — clip so top corners are rounded, bottom edge is flat
+  ctx.save()
+  ctx.beginPath()
+  ctx.moveTo(BAR_R, 0)
+  ctx.arcTo(W, 0, W, BAR_H, BAR_R)
+  ctx.lineTo(W, BAR_H)
+  ctx.lineTo(0, BAR_H)
+  ctx.arcTo(0, 0, BAR_R, 0, BAR_R)
+  ctx.closePath()
+  ctx.fillStyle = theme.headerBg; ctx.fill()
+  ctx.restore()
+
+  // Thin accent left bar spanning title row
+  const barW = Math.max(2, Math.round(REF * 0.005))
+  ctx.fillStyle = accent
+  ctx.fillRect(0, Math.round(TITLE_H * 0.14), barW, Math.round(TITLE_H * 0.72))
+
+  // ── Title row ─────────────────────────────────────────────────────────────
+  const nameSz = Math.round(TITLE_H * 0.40)
+  const dateSz = Math.round(nameSz * 0.74)
+  const nameX  = PAD + Math.round(REF * 0.014)
+  const titleCY = Math.round(TITLE_H * 0.50)
+
+  ctx.font = `600 ${nameSz}px ${FONT}`
+  ctx.fillStyle = theme.textPrimary
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
+  let nameStr = name || 'Activity'
+  const maxNW = W - PAD * 3 - Math.round(W * 0.22)
+  while (ctx.measureText(nameStr).width > maxNW && nameStr.length > 3) nameStr = nameStr.slice(0, -1)
+  if (nameStr !== (name || 'Activity')) nameStr += '…'
+  shadow(8); ctx.fillText(nameStr, nameX, titleCY); noShadow()
+
+  const startPt = pts.find(p => p.time)
+  if (startPt?.time) {
+    const dateStr = startPt.time.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+    ctx.font = `500 ${dateSz}px ${FONT}`
+    ctx.fillStyle = theme.acDim
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle'
+    shadow(5); ctx.fillText(dateStr, W - PAD, titleCY); noShadow()
+  }
+
+  // ── Stats row — 4 metrics, distance is hero-sized ────────────────────────
+  const movingMs = computeMovingTime(pts)
+  const stats4 = [
+    { v: (stats?.totalDist ?? 0).toFixed(2), u: 'km',   hero: true  },
+    { v: fmtHMS(movingMs),                   u: '',     hero: false },
+    { v: String(stats?.elevGain ?? 0),       u: 'm↑',   hero: false },
+    { v: (stats?.avgSpeed ?? 0).toFixed(1),  u: 'km/h', hero: false },
+  ]
+
+  const heroSz     = Math.round(STATS_H * 0.52)
+  const subSz      = Math.round(STATS_H * 0.36)
+  const heroUnitSz = Math.round(heroSz * 0.38)
+  const subUnitSz  = Math.round(subSz * 0.56)
+  const statsCY    = TITLE_H + Math.round(STATS_H * 0.52)
+  const colW       = (W - PAD * 2) / stats4.length
+
+  stats4.forEach((s, i) => {
+    const cx   = PAD + i * colW + colW / 2
+    const sz   = s.hero ? heroSz : subSz
+    const usiz = s.hero ? heroUnitSz : subUnitSz
+
+    if (i > 0) {
+      ctx.fillStyle = theme.divider
+      ctx.fillRect(PAD + i * colW, TITLE_H + Math.round(STATS_H * 0.16), 1, Math.round(STATS_H * 0.68))
+    }
+
+    ctx.font = `800 ${sz}px ${FONT}`
+    const vw = ctx.measureText(s.v).width
+    ctx.font = `${s.hero ? 700 : 600} ${usiz}px ${FONT}`
+    const uw  = s.u ? ctx.measureText(s.u).width : 0
+    const gap = s.u ? Math.round(sz * 0.07) : 0
+    const bw  = vw + uw + gap
+    const sx  = cx - bw / 2
+
+    ctx.font = `800 ${sz}px ${FONT}`
+    ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
+    shadow(s.hero ? 20 : 10); ctx.fillText(s.v, sx, statsCY); noShadow()
+
+    if (s.u) {
+      ctx.font = `${s.hero ? 700 : 600} ${usiz}px ${FONT}`
+      ctx.fillStyle = `rgba(${ar},${ag},${ab},1)`
+      shadow(s.hero ? 12 : 6)
+      ctx.fillText(s.u, sx + vw + gap, statsCY + Math.round(sz * 0.28))
+      noShadow()
+    }
+  })
+
+  // ── Mini route map — bottom-left circle ──────────────────────────────────
+  if (pts.length > 1) {
+    const MAP_SZ  = Math.round(REF * (isLS ? 0.17 : 0.20))
+    const MAP_PAD = Math.round(REF * 0.030)
+    const mx = MAP_PAD, my = H - MAP_SZ - MAP_PAD
+    ctx.save()
+    ctx.beginPath(); ctx.arc(mx + MAP_SZ / 2, my + MAP_SZ / 2, MAP_SZ / 2, 0, Math.PI * 2)
+    ctx.fillStyle = 'rgba(0,0,0,0.30)'; ctx.fill(); ctx.clip()
+    drawRoute(ctx, pts, mx, my, MAP_SZ, MAP_SZ, accent, {
+      routeHalo: 'rgba(0,0,0,0.45)', isNeon: false, sparkBacking: false,
+    })
+    ctx.restore()
+  }
+
+  // ── Watermark — bottom-right corner, smaller + dimmer ────────────────────
+  const ICON_H = Math.max(9, Math.round(REF * 0.022))
+  const txtSz  = Math.max(7, Math.round(ICON_H * 0.70))
+  const LABEL  = 'gpx2video'
+  ctx.font     = `500 ${txtSz}px ${FONT}`
+  const lw     = ctx.measureText(LABEL).width
+  const WPAD   = Math.round(ICON_H * 0.55)
+  const logoX  = W - WPAD - lw - Math.round(ICON_H * 0.28) - ICON_H
+  const logoY  = H - WPAD - ICON_H
+  drawLogoMark(ctx, logoX, logoY, ICON_H, 0.32)
+  ctx.font = `500 ${txtSz}px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,0.20)'
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
+  ctx.shadowColor = 'rgba(0,0,0,0.8)'; ctx.shadowBlur = Math.round(ICON_H * 0.3)
+  ctx.fillText(LABEL, logoX + ICON_H + Math.round(ICON_H * 0.28), logoY + ICON_H / 2)
+  ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0
 }
 
 // ── Minimal layout — route dominant, 3 floating stats ────────────────────────

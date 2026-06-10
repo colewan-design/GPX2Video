@@ -114,6 +114,7 @@
               @file="onVideoFile"
               @append="onVideoAppend"
               @select="onVideoSelect"
+              @clear="onVideoClear"
             />
           </div>
           <div v-if="hasVideo && hasTimestamps" class="lp-divider" />
@@ -357,7 +358,7 @@
         @reorder-clips="onReorderClips"
         @trim-clip="onTrimClip"
         @merge-clips="onMergeClips"
-        @set-current-frame-time="setCurrentFrameTime"
+        @set-current-frame-time="onSetCurrentFrameTime"
         @drop-video="f => hasVideo ? onVideoAppend([f]) : onVideoFile(f)"
         :captions="captionSegments"
       />
@@ -385,7 +386,7 @@ import StickerExport      from './components/StickerExport.vue'
 import StravaConnect      from './components/StravaConnect.vue'
 import SpeedCurveBar      from './components/SpeedCurveBar.vue'
 import CaptionEditor           from './components/CaptionEditor.vue'
-import { useWhisperTranscription } from './composables/useWhisperTranscription.js'
+import { useWhisperTranscription, releaseWhisperWorker } from './composables/useWhisperTranscription.js'
 import { SHADER_PARAMS }  from './utils/filters.js'
 import { useGpxParser }   from './composables/useGpxParser.js'
 import { useAnimation }   from './composables/useAnimation.js'
@@ -472,7 +473,7 @@ const overlayColor     = ref('#00ff88')
 const playerAspect     = ref('16:9')
 const speedCurvePreset = ref('normal')
 const activeTab        = ref('media')
-const captionStyle     = ref({ position: 'bottom', fontSize: 'medium', background: true })
+const captionStyle     = ref({ placement: 'bot-center', fontSize: 15, fontFamily: 'sans', color: '#ffffff', bold: true, allCaps: false, lowercase: false, background: true, bgOpacity: 55, outline: false })
 
 const {
   status: captionStatus, progress: captionProgress, error: captionError,
@@ -650,6 +651,7 @@ function onVideoSelect(i) {
 const { exporting, exportProgress, exportError, startExport, cancel: cancelExport } = useVideoExport()
 
 function onExport() {
+  releaseWhisperWorker()   // free WASM model memory before VideoEncoder starts
   const videoEl = videoStageRef.value?.getVideoEl()
   startExport(
     videoEl, segments.value, gpxPoints.value, totalOffsetSec.value,
@@ -717,6 +719,17 @@ async function onVideoFile(file) {
   videoFileName.value = file.name
   pendingSeekAfterLoad.value = null; pendingSameSegSeek.value = null
   await loadVideo(file)
+}
+
+function onVideoClear() {
+  // Revoke any existing object URLs before clearing
+  segments.value.forEach(s => { try { URL.revokeObjectURL(s.src) } catch {} })
+  segments.value  = []
+  clips.value     = []
+  vidSegIdx.value = 0
+  videoFileName.value = null
+  pendingSeekAfterLoad.value = null
+  pendingSameSegSeek.value   = null
 }
 
 function onTimeUpdate({ currentTime, duration }) {
@@ -793,6 +806,7 @@ function onVideoTrimStart(val) { setVideoTrimStart(val); _doSeek(val) }
 function onVideoTrimEnd(val)   { setVideoTrimEnd(val);   _doSeek(val) }
 function onVideoSeek(sec)      { _doSeek(sec) }
 function onGpxSeek(idx)        { gpxAnimIdx.value = Math.max(0, Math.min(idx, gpxPoints.value.length - 1)) }
+function onSetCurrentFrameTime(date) { setCurrentFrameTime(date); _doSeek(videoTrimStart.value) }
 
 function onVideoEnded() {
   const activeClips = clips.value

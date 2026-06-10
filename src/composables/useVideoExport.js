@@ -137,6 +137,82 @@ async function extractVideoFromMp4(src) {
   }
 }
 
+// Stream an MP4 through mp4box without loading the full file into RAM at once.
+// Reads the file as a ReadableStream, calling onBatch(samples, trackInfo, descr)
+// for each ~windowSec window of samples. Return false from onBatch to abort early.
+// Peak memory is bounded to ~windowSec of encoded video data rather than the full file.
+async function streamVideoSamples(src, windowSec, onBatch) {
+  const file    = mp4boxCreateFile()
+  let trackInfo = null
+  let descr     = null
+  let streamErr = null
+  const pending = []
+
+  file.onError  = (e) => { streamErr = String(e) }
+  file.onReady  = (info) => {
+    const t = info.tracks.find(tr => tr.type === 'video')
+    if (!t) return
+    trackInfo = { codec: t.codec, codedWidth: t.video.width, codedHeight: t.video.height, timescale: t.timescale }
+    try {
+      const entry = file.getTrackById(t.id).mdia.minf.stbl.stsd.entries[0]
+      const box   = entry.avcC || entry.hvcC || entry.vpcC || entry.av1C
+      if (box) {
+        const ds = new DataStream(undefined, 0, DataStream.BIG_ENDIAN)
+        box.write(ds)
+        descr = new Uint8Array(ds.buffer, 8)
+      }
+    } catch {}
+    file.setExtractionOptions(t.id, null, { nbSamples: Infinity })
+    file.start()
+  }
+  file.onSamples = (_, __, s) => { for (const x of s) pending.push(x) }
+
+  const resp   = await fetch(src)
+  const reader = resp.body.getReader()
+  let offset = 0, eof = false
+
+  const readMore = async () => {
+    if (eof) return
+    const { value, done } = await reader.read()
+    if (done) { eof = true; return }
+    const ab = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength)
+    ab.fileStart = offset
+    offset += ab.byteLength
+    file.appendBuffer(ab)
+    if (streamErr) throw new Error(streamErr)
+  }
+
+  while (!trackInfo && !eof) await readMore()
+  if (!trackInfo) return
+
+  while (true) {
+    while (!eof) {
+      if (pending.length >= 2) {
+        const span = (pending[pending.length - 1].cts - pending[0].cts) / pending[0].timescale
+        if (span >= windowSec) break
+      }
+      await readMore()
+    }
+
+    if (!pending.length) break
+
+    let split = pending.length
+    if (!eof && pending.length >= 2) {
+      const tgt = pending[0].cts + windowSec * pending[0].timescale
+      const idx = pending.findIndex(s => s.cts >= tgt)
+      if (idx > 0) split = idx
+    }
+
+    const batch = pending.splice(0, split)
+    const cont  = await onBatch(batch, trackInfo, descr)
+    if (cont === false) break
+
+    if (eof && pending.length === 0) break
+  }
+
+  reader.cancel().catch(() => {})
+}
+
 export function useVideoExport() {
   const exporting     = ref(false)
   const exportProgress = ref(0)
@@ -191,6 +267,11 @@ export function useVideoExport() {
     shaderParams = null, speedCurvePreset = 'normal', clipsArray = null,
     captionSegments = [], captionStyle = null,
   ) {
+    const t0 = performance.now()
+    const xlog = (...args) => console.log(`[export +${((performance.now()-t0)/1000).toFixed(2)}s]`, ...args)
+    const xerr = (...args) => console.error(`[export +${((performance.now()-t0)/1000).toFixed(2)}s]`, ...args)
+    xlog('start')
+
     const srcW = videoEl.videoWidth
     const srcH = videoEl.videoHeight
 
@@ -279,9 +360,11 @@ export function useVideoExport() {
     const curveKeyframes = curvePreset.keyframes
     const useCurve       = !isFlatNormal(curveKeyframes)
 
-    // VideoDecoder requires the full file in RAM — cap at 60s to avoid OOM.
+    xlog(`clips=${activeClips.length} totalDur=${totalActiveDur.toFixed(2)}s useCurve=${useCurve}`)
+
+    // VideoDecoder requires the full file in RAM — cap at 30s to avoid OOM / tab context loss.
     // Audio stream copy only extracts the audio track (tiny), so no length limit.
-    const shortClip = totalActiveDur <= 60
+    const shortClip = totalActiveDur <= 30
 
     const audioExtracted = new Map()  // segIdx → { info, samples, description }
     for (const segIdx of new Set(activeClips.map(c => c.segmentIdx))) {
@@ -371,7 +454,7 @@ export function useVideoExport() {
     function makeVideoEncoder() {
       const enc = new VideoEncoder({
         output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-        error:  (e) => { encoderError = e },
+        error:  (e) => { xerr('VideoEncoder error:', e); encoderError = e },
       })
       enc.configure(encCfg)
       return enc
@@ -440,25 +523,56 @@ export function useVideoExport() {
     let activeVidEl = null
 
     // ── Caption drawing ───────────────────────────────────────────────────────
-    const capStyle = captionStyle ?? { position: 'bottom', fontSize: 'medium', background: true }
+    const capStyle = captionStyle ?? { placement: 'bot-center', fontSize: 15, background: true, bgOpacity: 55, fontFamily: 'sans' }
+    const CAP_FONT_FAMILY = {
+      sans:        'Inter, Arial, sans-serif',
+      montserrat:  "'Montserrat', sans-serif",
+      impact:      "Impact, 'Arial Narrow', sans-serif",
+      oswald:      "'Oswald', sans-serif",
+      bebas:       "'Bebas Neue', Impact, sans-serif",
+    }
     function drawCaptions(c, w, h, absTime) {
       if (!captionSegments?.length) return
       const seg = captionSegments.find(s => absTime >= s.start && absTime < s.end)
       if (!seg?.text) return
 
-      const scale = w / 600
-      const fontPx = capStyle.fontSize === 'small' ? 16 : capStyle.fontSize === 'large' ? 28 : 22
+      // scale matches the CSS preview: stageW is the stage pixel width recorded on drag/resize;
+      // fallback 600 matches the default layout width used when no interaction has occurred.
+      const stageW = capStyle.stageW ?? 600
+      const scale = w / stageW
+      const baseFontPx = typeof capStyle.fontSize === 'number'
+        ? capStyle.fontSize
+        : ({ small: 12, medium: 15, large: 20 }[capStyle.fontSize] ?? 15)
+      const renderedFontPx = baseFontPx * scale
+      const fontFamily = CAP_FONT_FAMILY[capStyle.fontFamily] ?? CAP_FONT_FAMILY.sans
+      const fontWeight = capStyle.bold !== false ? 'bold' : 'normal'
       c.save()
-      c.font = `bold ${fontPx * scale}px Inter, Arial, sans-serif`
-      c.textAlign = 'center'
-      c.textBaseline = 'bottom'
-      const pad = 12 * scale
-      const lineH = fontPx * scale * 1.35
-      const x = w / 2
-      const y = capStyle.position === 'top' ? lineH + 28 * scale : h - 52 * scale
+      c.font = `${fontWeight} ${renderedFontPx}px ${fontFamily}`
 
-      const words = seg.text.trim().split(/\s+/)
-      const maxW = w * 0.85
+      // Use drag-positioned coordinates (capX/capY % from stage) when available,
+      // otherwise fall back to the placement grid string.
+      const hasDragPos = capStyle.capX != null && capStyle.capY != null
+      const placement = capStyle.placement ?? (capStyle.position === 'top' ? 'top-center' : 'bot-center')
+      const [vert, horiz] = placement.split('-')
+      const capCX = hasDragPos
+        ? w * capStyle.capX / 100
+        : (horiz === 'left' ? w * 0.2 : horiz === 'right' ? w * 0.8 : w / 2)
+      c.textAlign = hasDragPos ? 'center' : (horiz === 'left' ? 'left' : horiz === 'right' ? 'right' : 'center')
+      c.textBaseline = 'bottom'
+      const padH = 12 * scale   // horizontal padding — matches CSS padding: 4px 12px
+      const padV =  4 * scale   // vertical padding
+      const lineH = renderedFontPx * 1.35
+      // capY% is the element TOP in CSS; offset by padding-top + lineH to get first-line text bottom.
+      // For grid placement: capCY is the anchor used to compute baseY after word-wrap.
+      const capCY = hasDragPos
+        ? h * capStyle.capY / 100 + padV + lineH
+        : (vert === 'top' ? lineH + 28 * scale : vert === 'mid' ? h / 2 : h - 31 * scale)
+
+      const rawWords = seg.text.trim()
+      const displayText = capStyle.allCaps ? rawWords.toUpperCase() : capStyle.lowercase ? rawWords.toLowerCase() : rawWords
+      const words = displayText.split(/\s+/)
+      const capWPct = capStyle.capW ?? 60
+      const maxW = w * capWPct / 100
       const lines = []
       let line = ''
       for (const word of words) {
@@ -469,19 +583,29 @@ export function useVideoExport() {
       if (line) lines.push(line)
 
       const blockH = lines.length * lineH
-      const baseY = capStyle.position === 'top' ? y : y - blockH + lineH
+      // Drag case: capCY already encodes first-line bottom, so baseY = capCY (same as 'top').
+      const baseY = (hasDragPos || vert === 'top') ? capCY : capCY - blockH + lineH
 
       if (capStyle.background) {
-        const maxLineW = Math.max(...lines.map(l => c.measureText(l).width))
-        c.fillStyle = 'rgba(0,0,0,0.55)'
-        const rx = x - maxLineW / 2 - pad, ry = baseY - lineH - pad * 0.5
-        const rw = maxLineW + pad * 2, rh = blockH + pad
+        const bgAlpha = (capStyle.bgOpacity ?? 55) / 100
+        c.fillStyle = `rgba(0,0,0,${bgAlpha})`
+        // Background width matches the CSS element width (capW%), not just the measured text.
+        const bgW = w * capWPct / 100
+        const rx = capCX - bgW / 2, ry = baseY - lineH - padV
+        const rw = bgW, rh = blockH + padV * 2
         rrect(c, rx, ry, rw, rh, 6 * scale)
         c.fill()
       }
 
-      c.fillStyle = '#ffffff'
-      lines.forEach((l, i) => c.fillText(l, x, baseY + i * lineH))
+      if (capStyle.outline) {
+        c.strokeStyle = '#000000'
+        c.lineWidth = Math.max(1, renderedFontPx * 0.08)
+        c.lineJoin = 'round'
+        lines.forEach((l, i) => c.strokeText(l, capCX, baseY + i * lineH))
+      }
+
+      c.fillStyle = capStyle.color ?? '#ffffff'
+      lines.forEach((l, i) => c.fillText(l, capCX, baseY + i * lineH))
       c.restore()
     }
 
@@ -504,28 +628,43 @@ export function useVideoExport() {
           ? new Date(gpxPoints[0].time.getTime() + (totalOffsetSec + absTime) * 1000)
           : null
         overlayCtx.clearRect(0, 0, W, H)
-        drawMapInset(overlayCtx, W, H, gpxPoints, idx, maxSpeed, trimStart)
+        if (overlayFormat === 'sticker2') {
+          drawMapFull(overlayCtx, W, H, gpxPoints, idx, maxSpeed, trimStart, overlayColor)
+        } else if (overlayFormat !== 'sticker1') {
+          drawMapInset(overlayCtx, W, H, gpxPoints, idx, maxSpeed, trimStart)
+        }
         drawHud(overlayCtx, W, H, point, gpxPoints, idx, overallProgress, totalTime, trimStart, overlayFormat, overlayColor, locationName, displayTime)
         lastOverlayIdx = idx
         lastOverlaySec = currentSec
       }
 
       // Draw video frame — VideoFrame (decoder path), WebGL shader, or plain video element.
-      // For rotated videos we apply a canvas transform; WebGL is bypassed because the
-      // shader doesn't account for rotation (activeGlOk stays false when swapDims=true).
+      // ROTATION HANDLING:
+      //   • VideoFrame (frame != null): raw coded pixels, pre-rotation — drawRotated applies the
+      //     transform to produce display-correct output.
+      //   • <video> element (activeVidEl): Chrome's drawImage delivers the browser's
+      //     display-oriented frame (rotation metadata already applied internally). Adding
+      //     drawRotated here would double-rotate portrait phone videos. Use plain drawImage.
+      //   • WebGL shader: bypassed for rotated videos (needsShader = !swapDims && …) so
+      //     activeGlOk is always false when swapDims=true — no rotation issue there.
       if (frame) {
-        drawRotated(ctx, frame)
+        const cssFilter = shaderParams ? buildExportFilter(shaderParams) : null
+        if (cssFilter) ctx.filter = cssFilter
+        drawRotated(ctx, frame)   // VideoFrame = raw coded pixels; rotation IS needed
+        if (cssFilter) ctx.filter = 'none'
       } else if (activeGlOk) {
         shader.renderFrame()
         if (shader.isContextOk()) {
           ctx.drawImage(glCanvas, 0, 0, W, H)
         } else {
-          // WebGL context was lost (GPU resource contention) — fall back to plain draw
+          // WebGL context lost — fall back; browser already applied rotation via drawImage
           activeGlOk = false
-          drawRotated(ctx, activeVidEl)
+          ctx.drawImage(activeVidEl, 0, 0, W, H)
         }
       } else {
-        drawRotated(ctx, activeVidEl)
+        // <video> element: browser applies rotation metadata before handing pixels to
+        // drawImage, so no additional transform is needed regardless of swapDims.
+        ctx.drawImage(activeVidEl, 0, 0, W, H)
       }
 
       // Composite cached overlay
@@ -562,6 +701,9 @@ export function useVideoExport() {
     let frameCount       = 0
     let outputTimeOffset = 0
 
+    xlog(`audio path: ${useStreamCopy ? 'stream-copy' : audioReader ? 'captureStream' : pcmAudioBuffer ? 'pcm-fallback' : 'none'}`)
+    xlog(`video encoder: ${encCfg.codec} ${W}x${H} ${encCfg.bitrate/1000}kbps hw=${encCfg.hardwareAcceleration}`)
+
     // ── Encode each clip ──────────────────────────────────────────────────────
     for (const clip of activeClips) {
       if (!exporting.value) break
@@ -569,9 +711,12 @@ export function useVideoExport() {
 
       const videoData = clip.src ? videoExtracted.get(clip.src) : null
 
+      xlog(`clip[${activeClips.indexOf(clip)}] localStart=${clip.localStart.toFixed(2)}s localEnd=${clip.localEnd.toFixed(2)}s src=${clip.src ? 'present' : 'none'} videoData=${!!videoData}`)
+
       let usedDecoder = false
       if (videoData) {
         // ── Fast VideoDecoder path ──────────────────────────────────────────
+        xlog('clip: fast VideoDecoder path')
         const frameCountBefore = frameCount
         let lastDecodedPts = clip.localStart - frameInterval
 
@@ -615,7 +760,7 @@ export function useVideoExport() {
               codedWidth:  videoData.codedWidth,
               codedHeight: videoData.codedHeight,
               ...(videoData.description ? { description: videoData.description } : {}),
-              hardwareAcceleration: 'no-preference',
+              hardwareAcceleration: 'prefer-software',
             })
           } catch (e) { decoder.close(); encoderError = e; resolve(); return }
 
@@ -651,16 +796,161 @@ export function useVideoExport() {
         }
       }
 
+      // ── Streaming VideoDecoder path (long clips, no speed curve) ───────────
+      // Reads the file as a stream so the full file is never loaded into RAM at
+      // once. Maintains a keyframe chain buffer so seek accuracy is preserved.
+      if (!usedDecoder && clip.src && 'VideoDecoder' in window && !useCurve) {
+        xlog('clip: streaming VideoDecoder path')
+        const frameCountBefore2 = frameCount
+        let streamDec  = null
+        let decReady   = false
+        let preClipBuf = []   // samples from last keyframe up to clip.localStart
+        let pastStart  = false
+        let lastDecPts = clip.localStart - frameInterval
+        // Max frames to keep in encoder queue before pausing decode.
+        // Checked after a real macrotask yield so encoder output callbacks have fired.
+        const MAX_ENC_QUEUE = fps * 2  // 2 seconds of buffering
+
+        try {
+          await streamVideoSamples(clip.src, 32, async (batch, trackInfo, descr) => {
+            if (!exporting.value) return false
+            if (encoderError && !tryRecoverEncoder()) return false
+
+            if (!streamDec) {
+              streamDec = new VideoDecoder({
+                output: (frame) => {
+                  if (!exporting.value) { frame.close(); return }
+                  const needsKF = !!encoderError
+                  if (encoderError && !tryRecoverEncoder()) { frame.close(); return }
+                  const ptsSec = frame.timestamp / 1_000_000
+                  if (ptsSec < clip.localStart - frameInterval * 0.5) { frame.close(); return }
+                  if (ptsSec >= clip.localEnd   + frameInterval * 0.5) { frame.close(); return }
+                  if (ptsSec - lastDecPts < frameInterval - 0.001)     { frame.close(); return }
+                  lastDecPts = ptsSec
+                  const elapsed     = Math.max(0, ptsSec - clip.localStart)
+                  const overallProg = totalActiveDur > 0 ? (outputTimeOffset + elapsed) / totalActiveDur : 0
+                  try { renderCanvas(clip.absStart + elapsed, overallProg, frame) } catch (_) {}
+                  frame.close()
+                  const ts = Math.round((outputTimeOffset + elapsed) * 1_000_000)
+                  const vf = new VideoFrame(canvas, { timestamp: ts })
+                  try {
+                    encoder.encode(vf, { keyFrame: needsKF || frameCount % (fps * 2) === 0 })
+                    frameCount++
+                  } catch (e) { encoderError = e } finally { vf.close() }
+                  exportProgress.value = Math.min(0.93, overallProg)
+                },
+                error: (e) => { encoderError = e },
+              })
+              try {
+                streamDec.configure({
+                  codec:       trackInfo.codec,
+                  codedWidth:  trackInfo.codedWidth,
+                  codedHeight: trackInfo.codedHeight,
+                  ...(descr ? { description: descr } : {}),
+                  hardwareAcceleration: 'prefer-software',
+                })
+                decReady = true
+              } catch (e) { encoderError = e; return false }
+            }
+
+            for (const s of batch) {
+              if (!exporting.value) return false
+              if (encoderError && !tryRecoverEncoder()) return false
+              const t = s.cts / s.timescale
+
+              if (!pastStart) {
+                // Accumulate samples since last keyframe; flush chain when we reach clip start
+                if (s.is_sync) preClipBuf = []
+                preClipBuf.push(s)
+                if (t >= clip.localStart - frameInterval * 0.5) {
+                  pastStart = true
+                  for (const ps of preClipBuf) {
+                    streamDec.decode(new EncodedVideoChunk({
+                      type:      ps.is_sync ? 'key' : 'delta',
+                      timestamp: Math.round((ps.cts / ps.timescale) * 1_000_000),
+                      duration:  Math.round((ps.duration / ps.timescale) * 1_000_000),
+                      data:      ps.data,
+                    }))
+                  }
+                  preClipBuf = null
+                }
+              } else {
+                if (t > clip.localEnd + 1.0) return false  // past clip end — stop streaming
+
+                // Yield to the macrotask queue before every active-region decode so
+                // decoder output callbacks and encoder processing run between submits.
+                // Without this, all decode() calls in a batch execute as a microtask
+                // chain and the encoder queue floods before any callbacks can fire.
+                await new Promise(r => setTimeout(r, 0))
+
+                if (!exporting.value) return false
+                if (encoderError && !tryRecoverEncoder()) return false
+
+                // If encoder is backed up, wait for it to drain before submitting more.
+                while (encoder.encodeQueueSize > MAX_ENC_QUEUE) {
+                  if (encoderError) { if (!tryRecoverEncoder()) return false; break }
+                  await new Promise(r => setTimeout(r, 10))
+                }
+
+                streamDec.decode(new EncodedVideoChunk({
+                  type:      s.is_sync ? 'key' : 'delta',
+                  timestamp: Math.round((s.cts / s.timescale) * 1_000_000),
+                  duration:  Math.round((s.duration / s.timescale) * 1_000_000),
+                  data:      s.data,
+                }))
+              }
+            }
+            return true
+          })
+
+          xlog(`streaming: flush start (decReady=${decReady} encoderError=${encoderError?.message ?? encoderError ?? null})`)
+          if (decReady) await streamDec.flush()
+          xlog('streaming: flush complete')
+
+          // Drain encoder — poll with stale detection so a stuck encoder doesn't hang.
+          if (encoder.encodeQueueSize > 0) {
+            xlog(`streaming: draining encoder (queueSize=${encoder.encodeQueueSize})`)
+            let lastQ = encoder.encodeQueueSize, staleMs = 0
+            while (encoder.encodeQueueSize > 0 && !encoderError) {
+              await new Promise(r => setTimeout(r, 50))
+              if (encoder.encodeQueueSize === lastQ) {
+                staleMs += 50
+                if (staleMs >= 5000) { xerr('streaming: encoder drain stalled, giving up'); break }
+              } else { lastQ = encoder.encodeQueueSize; staleMs = 0 }
+            }
+            xlog(`streaming: encoder drained (queueSize=${encoder.encodeQueueSize} err=${!!encoderError})`)
+          }
+        } catch (e) {
+          xerr('streaming decoder error:', e)
+          encoderError = e
+        } finally {
+          try { streamDec?.close() } catch {}
+        }
+
+        if (frameCount > frameCountBefore2) {
+          xlog(`streaming: done frames=${frameCount} encoderQueueSize=${encoder.encodeQueueSize}`)
+          usedDecoder = true
+          outputTimeOffset += clip.clipDur
+        } else {
+          xerr('streaming: no frames produced — falling through to RVFC', { encoderError })
+          encoderError = null
+          if (encoder.state === 'closed') encoder = makeVideoEncoder()
+        }
+      }
+
       if (!usedDecoder) {
         // ── Legacy path: WebGL shader + seek/RVFC ──────────────────────────
+        xlog('clip: RVFC (legacy) path')
         const el = await getSegEl(clip.segmentIdx, clip.src)
 
         if (el !== activeVidEl) {
           if (activeVidEl) shader.destroy()
-          // Skip WebGL for rotated videos — the shader textures from the coded
-          // (unrotated) frame and would need UV-level rotation support.
-          activeGlOk  = swapDims ? false : shader.setup(glCanvas, el)
-          if (activeGlOk) shader.setFilter(shaderParams ?? SHADER_PARAMS.none)
+          // Skip WebGL for rotated videos (no UV-level rotation support in shader),
+          // and also skip when shader params are identity (no effects active) to avoid
+          // sustained GPU context pressure on long exports.
+          const needsShader = !swapDims && shaderParams && isNonIdentityShader(shaderParams)
+          activeGlOk  = needsShader ? shader.setup(glCanvas, el) : false
+          if (activeGlOk) shader.setFilter(shaderParams)
           activeVidEl = el
         }
 
@@ -689,6 +979,9 @@ export function useVideoExport() {
             frame.close()
             frameCount++
             exportProgress.value = Math.min(0.93, overallProg)
+            // Yield every second to let the browser flush GPU work and prevent
+            // WebGL context loss / GPU watchdog timeout on long exports.
+            if (frameCount % fps === 0) await new Promise(r => setTimeout(r, 0))
           }
 
           outputTimeOffset += sourceTimes.length / fps
@@ -834,25 +1127,36 @@ export function useVideoExport() {
       if (segIdx !== 0) { el.src = ''; el.load() }
     }
 
+    xlog(`all clips done. totalFrames=${frameCount} encoderError=${encoderError?.message ?? encoderError ?? null}`)
+
     audioDone = true
     audioReader?.cancel().catch(() => {})
     await audioLoopDone
 
-    if (encoderError && !tryRecoverEncoder()) throw encoderError
+    if (encoderError && !tryRecoverEncoder()) {
+      xerr('unrecoverable encoder error before flush:', encoderError)
+      throw encoderError
+    }
 
     exportProgress.value = 0.95
+    xlog(`encoder.flush start (state=${encoder.state} encodeQueueSize=${encoder.encodeQueueSize})`)
     await encoder.flush()
+    xlog('encoder.flush complete')
     encoder.close()
 
     exportProgress.value = 0.97
     if (!useStreamCopy && audioEncoder && audioEncoder.state !== 'closed') {
+      xlog('audioEncoder.flush start')
       await audioEncoder.flush()
+      xlog('audioEncoder.flush complete')
       audioEncoder.close()
     }
 
     exportProgress.value = 0.99
     shader.destroy()
+    xlog('muxer.finalize start')
     muxer.finalize()
+    xlog('muxer.finalize complete')
 
     exportProgress.value = 1
 
@@ -899,6 +1203,27 @@ function gpxTrimToVideoRange(gpxPoints, totalOffsetSec, duration, trimStart, tri
   return [vStart, vEnd]
 }
 
+// ─── Shader identity check ───────────────────────────────────────────────────
+// Returns true when params differ from the pass-through defaults.
+// Skipping WebGL when no effects are active avoids GPU context pressure on long exports.
+function isNonIdentityShader(p) {
+  return p.sharp > 0 || p.bright !== 1 || p.contrast !== 1 ||
+         p.sat !== 1 || p.sepia > 0 || (p.hue ?? 0) !== 0
+}
+
+// Build a Canvas 2D CSS filter string from shader params for the VideoDecoder paths.
+// Sharpness has no CSS equivalent and is intentionally omitted (it only runs via WebGL).
+function buildExportFilter(p) {
+  if (!p) return null
+  const parts = []
+  if (p.bright   != null && p.bright   !== 1) parts.push(`brightness(${p.bright})`)
+  if (p.contrast != null && p.contrast !== 1) parts.push(`contrast(${p.contrast})`)
+  if (p.sat      != null && p.sat      !== 1) parts.push(`saturate(${p.sat})`)
+  if (p.sepia    != null && p.sepia     >  0) parts.push(`sepia(${p.sepia})`)
+  if (p.hue      != null && p.hue      !== 0) parts.push(`hue-rotate(${(p.hue * 360).toFixed(1)}deg)`)
+  return parts.length ? parts.join(' ') : null
+}
+
 // ─── H.264 codec string ──────────────────────────────────────────────────────
 // Pick the minimum AVC level (Main profile) that fits the coded area.
 // Coded height is rounded up to the next multiple of 16 (macroblock row).
@@ -931,6 +1256,15 @@ function findAnimIdx(gpxPoints, totalOffsetSec, videoTimeSec, duration, trimStar
       else hi = mid
     }
     idx = lo
+
+    // If the result hit an extreme (video doesn't overlap GPS range) and the trim
+    // window is valid, advance proportionally within [trimStart, maxIdx] so the
+    // gauge still moves rather than freezing at the boundary point.
+    const hitExtreme = idx === 0 || idx === gpxPoints.length - 1
+    if (hitExtreme && maxIdx > trimStart && duration > 0) {
+      const rel = Math.max(0, Math.min(videoTimeSec / duration, 1))
+      idx = Math.round(trimStart + rel * (maxIdx - trimStart))
+    }
   }
 
   return Math.max(trimStart, Math.min(idx, maxIdx))
@@ -950,7 +1284,7 @@ function hexToRgba(hex, alpha) {
 }
 
 function drawMapInset(ctx, W, H, pts, animIdx, maxSpeed, segStart = 0) {
-  const s  = (W / 1280) * hudScaleFor(W, H)   // layout-level scale (gap, border)
+  const s  = textScale(W, H)   // layout-level scale (gap, border)
   // Match preview CSS: width: 21%, aspect-ratio: 4/3, top: 4px, right: 4px
   const IW = Math.round(W * 0.21)
   const IH = Math.round(IW * 3 / 4)
@@ -958,9 +1292,9 @@ function drawMapInset(ctx, W, H, pts, animIdx, maxSpeed, segStart = 0) {
   const IX = W - IW - gap
   const IY = gap
 
-  // Scale internal elements proportional to the inset width so they match the
-  // preview canvas which uses fixed pixel values on a ~76 px reference inset.
-  const ms = Math.min(IW / 76, 5)
+  // Scale internal elements proportional to the inset width.
+  // Reference 168px = 21% of an 800px stage (typical desktop preview size).
+  const ms = IW / 168
 
   const cp   = pts[animIdx]
   const latR = INSET_LAT_R
@@ -971,7 +1305,8 @@ function drawMapInset(ctx, W, H, pts, animIdx, maxSpeed, segStart = 0) {
   const look = Math.min(20, animIdx)
   if (look >= 2) {
     const p0 = pts[animIdx - look]
-    heading = Math.atan2(cp.lon - p0.lon, cp.lat - p0.lat)
+    const midLat = ((cp.lat + p0.lat) / 2) * Math.PI / 180
+    heading = Math.atan2((cp.lon - p0.lon) * Math.cos(midLat), cp.lat - p0.lat)
   }
 
   const CX = IX + IW / 2, CY = IY + IH / 2
@@ -1044,18 +1379,31 @@ function drawMapInset(ctx, W, H, pts, animIdx, maxSpeed, segStart = 0) {
   ctx.restore()
 }
 
-// Scale factor that matches CSS --hud-scale: compensates for portrait videos
-// where width-based sizing (W/1080) yields elements that look tiny against the tall frame.
+// Scale factor that matches CSS --hud-scale (used for % of W element sizing).
 function hudScaleFor(W, H) {
   return Math.max(1, Math.sqrt(H / W) / Math.sqrt(9 / 16))
 }
 
+// Scale for px-based sizing (fonts, borders, margins).
+// The CSS preview applies --hud-scale as a transform *on top of* cqw-based sizes.
+// For portrait the raw (W/1280)*hs formula gives the same s as landscape (math symmetry),
+// but the CSS effectively scales text by hs× more. Using hs^1.3 in the exponent breaks
+// that symmetry: portrait 1080×1920 → s≈1.78 (was 1.5); landscape → unchanged at 1.5.
+function textScale(W, H) {
+  const hs = Math.max(1, Math.sqrt(H / W) / Math.sqrt(9 / 16))
+  return (W / 1280) * Math.pow(hs, 1.3)
+}
+
 function drawHud(ctx, W, H, point, pts, animIdx, progress, totalTime, trimStart = 0, overlayFormat = 'classic', overlayColor = '#f59e0b', locationName = '', displayTime = null) {
-  if (overlayFormat === 'minimal') { drawHudMinimal(ctx, W, H, point, pts, progress, overlayColor, locationName); return }
-  if (overlayFormat === 'gopro')   { drawHudGoPro(ctx, W, H, point, pts, animIdx, progress, totalTime, trimStart, overlayColor, locationName, displayTime); return }
-  if (overlayFormat === 'sport')   { drawHudSport(ctx, W, H, point, progress, overlayColor, locationName); return }
-  if (overlayFormat === 'cycling') { drawHudCycling(ctx, W, H, point, pts, animIdx, progress, overlayColor, locationName); return }
-  const s = (W / 720) * hudScaleFor(W, H)
+  if (overlayFormat === 'minimal')   { drawHudMinimal(ctx, W, H, point, pts, progress, overlayColor, locationName); return }
+  if (overlayFormat === 'gopro')     { drawHudGoPro(ctx, W, H, point, pts, animIdx, progress, totalTime, trimStart, overlayColor, locationName, displayTime); return }
+  if (overlayFormat === 'sport')     { drawHudSport(ctx, W, H, point, progress, overlayColor, locationName); return }
+  if (overlayFormat === 'cycling')   { drawHudCycling(ctx, W, H, point, pts, animIdx, progress, overlayColor, locationName); return }
+  if (overlayFormat === 'sticker1')  { drawHudSticker1(ctx, W, H, pts, totalTime, overlayColor, locationName); return }
+  if (overlayFormat === 'sticker2')  { drawHudSticker2(ctx, W, H, pts, totalTime, overlayColor, locationName); return }
+  if (overlayFormat === 'tac')       { drawHudTac(ctx, W, H, point, pts, animIdx, progress, totalTime, overlayColor); return }
+  if (overlayFormat === 'dashboard') { drawHudDashboard(ctx, W, H, point, pts, animIdx, progress, totalTime, overlayColor); return }
+  const s = textScale(W, H)
   ctx.save()
   ctx.font = `700 ${Math.round(14 * s)}px -apple-system, BlinkMacSystemFont, sans-serif`
 
@@ -1165,44 +1513,119 @@ function drawHud(ctx, W, H, point, pts, animIdx, progress, totalTime, trimStart 
     const tiLeft  = Math.round(W * 0.29) + Math.round(4 * s)
     const tIconSz = Math.round(20 * s)
     icon(ICON_THERMO, tiLeft + tIconSz / 2, tiTop + tIconSz / 2, tIconSz, WHITE)
-    text(`${tempC}°C`, tiLeft + tIconSz + Math.round(3*s), tiTop + tIconSz / 2, 14, 600, WHITE, 'left', 'middle')
+    text(`${tempC}°C`, tiLeft + tIconSz + Math.round(3*s), tiTop + tIconSz / 2, 18, 600, WHITE, 'left', 'middle')
   }
 
   const distKmStr      = ((point?.cumDist ?? 0) / 1000).toFixed(1)
   const totalDistKmStr = pts.length ? ((pts[pts.length - 1].cumDist / 1000).toFixed(1)) : '0.0'
-  text(`${distKmStr} km`,          tiRight, tiTop + Math.round(2*s),  16, 700, WHITE,                       'right', 'top')
-  text(`Total: ${totalDistKmStr}`, tiRight, tiTop + Math.round(22*s), 9,  400, 'rgba(255,255,255,0.40)',    'right', 'top')
+  text(`${distKmStr} km`,          tiRight, tiTop + Math.round(2*s),  20, 700, WHITE,                       'right', 'top')
+  text(`Total: ${totalDistKmStr}`, tiRight, tiTop + Math.round(24*s), 12, 400, 'rgba(255,255,255,0.40)',    'right', 'top')
+
+  // ── Lap times box (top-left) — mirrors CSS .hud-laps ─────────────────────────
+  // 1 km auto-laps; only shown when at least one full lap has been completed.
+  {
+    const LAP_KM = 1.0
+    const lapMarkers = [0]; let nextKm = LAP_KM
+    for (let i = 1; i < pts.length; i++) {
+      if ((pts[i]?.cumDist ?? 0) / 1000 >= nextKm) { lapMarkers.push(i); nextKm += LAP_KM }
+    }
+    const totalLapsN   = Math.floor(((pts[pts.length - 1]?.cumDist ?? 0) / 1000) / LAP_KM)
+    const currentLapN  = Math.floor(((point?.cumDist ?? 0) / 1000) / LAP_KM) + 1
+
+    if (totalLapsN > 0) {
+      const compLaps = []
+      for (let i = 0; i < lapMarkers.length - 1; i++) {
+        if (lapMarkers[i + 1] > animIdx) break
+        const p0 = pts[lapMarkers[i]], p1 = pts[lapMarkers[i + 1]]
+        const ms = (p0?.time && p1?.time) ? p1.time - p0.time : null
+        compLaps.push({ n: i + 1, ms })
+      }
+      const validMs  = compLaps.filter(l => l.ms != null).map(l => l.ms)
+      const bestLapMs = validMs.length ? Math.min(...validMs) : null
+      const p0Lap    = lapMarkers[currentLapN - 1] != null ? pts[lapMarkers[currentLapN - 1]] : null
+      const curLapMs = (p0Lap?.time && point?.time) ? point.time - p0Lap.time : 0
+
+      function fmtLapMs(ms) {
+        if (!ms || ms < 0) return '--'
+        const sec = Math.floor(ms / 1000), m = Math.floor(sec / 60)
+        const frac = String(Math.floor((ms % 1000) / 10)).padStart(3, '0')
+        return `${m}:${String(sec % 60).padStart(2,'0')}.${frac}`
+      }
+
+      const lapRowsData = compLaps.slice(-5).map(l => ({
+        n: l.n, time: fmtLapMs(l.ms),
+        delta: l.ms && bestLapMs && l.ms > bestLapMs ? `+${fmtLapMs(l.ms - bestLapMs)}` : null,
+        current: false,
+      }))
+      lapRowsData.unshift({ n: currentLapN, time: fmtLapMs(curLapMs), delta: null, current: true })
+      const lapRows = lapRowsData.slice(0, 6)
+
+      // Layout — CSS: left:0; top:4px; width:27%; padding:5px 8px 7px; border-radius:0 0 6px 0
+      const lapW     = Math.round(W * 0.27)
+      const lapPadT  = Math.round(5 * s), lapPadB = Math.round(7 * s), lapPadSide = Math.round(8 * s)
+      const hdrFS = 13, rowFS = 15, curFS = 17  // CSS: 1cqw→13, 1.15cqw→15, 1.3cqw→17
+      const lapLineH = Math.round(rowFS * s * 1.4)
+      const lapBoxH  = lapPadT + Math.round(hdrFS * s) + Math.round(3 * s) + lapRows.length * lapLineH + lapPadB
+
+      // Background — only bottom-right corner rounded
+      const br = Math.round(6 * s)
+      ctx.save()
+      ctx.beginPath()
+      ctx.moveTo(0, Math.round(4 * s))
+      ctx.lineTo(lapW, Math.round(4 * s))
+      ctx.lineTo(lapW, Math.round(4 * s) + lapBoxH - br)
+      ctx.arcTo(lapW, Math.round(4 * s) + lapBoxH, lapW - br, Math.round(4 * s) + lapBoxH, br)
+      ctx.lineTo(0, Math.round(4 * s) + lapBoxH)
+      ctx.closePath()
+      ctx.fillStyle = 'rgba(0,0,0,0.55)'
+      ctx.fill()
+      ctx.restore()
+
+      // Header: "1 km lap {current}/{total}"
+      const lapTopY = Math.round(4 * s) + lapPadT + Math.round(hdrFS * s)
+      text(`1 km lap ${currentLapN}/${totalLapsN}`, lapPadSide, lapTopY, hdrFS, 700, 'rgba(255,255,255,0.45)')
+
+      // Lap rows
+      let lapRowY = lapTopY + Math.round(3 * s)
+      for (const row of lapRows) {
+        lapRowY += lapLineH
+        const rowColor = row.current ? AMBER : 'rgba(255,255,255,0.55)'
+        const rowStr   = row.delta ? `${row.n}/ ${row.time} ${row.delta}` : `${row.n}/ ${row.time}`
+        text(rowStr, lapPadSide, lapRowY, row.current ? curFS : rowFS, row.current ? 700 : 500, rowColor)
+      }
+    }
+  }
 
   // ── Left stats panel (icon + value, vertically space-around) ─────────────────
+  // CSS .hud-stat-val: 1.4cqw→18, .hud-stat-multi: 1.2cqw→15
   icon(ICON_CADENCE, licx, r0, iconSz, AMBER)
-  text(cadV, ltx, r0, 15, 700, WHITE, 'left', 'middle')
-  // measure cadV width while font is still set from text() above
+  text(cadV, ltx, r0, 18, 700, WHITE, 'left', 'middle')
   const cadVW = ctx.measureText(cadV).width
-  text('rpm', ltx + cadVW + Math.round(3*s), r0, 9, 600, DIM, 'left', 'middle')
+  text('rpm', ltx + cadVW + Math.round(3*s), r0, 11, 600, DIM, 'left', 'middle')
 
   icon(ICON_ELEV, licx, r1, iconSz, AMBER)
-  const glOff = Math.round(8 * s)
-  text(`Gain: ${gainM} m`, ltx, r1 - glOff, 13, 600, WHITE, 'left', 'middle')
-  text(`Loss: ${lossM} m`, ltx, r1 + glOff, 12, 600, DIM,   'left', 'middle')
+  const glOff = Math.round(11 * s)
+  text(`Gain: ${gainM} m`, ltx, r1 - glOff, 15, 600, WHITE, 'left', 'middle')
+  text(`Loss: ${lossM} m`, ltx, r1 + glOff, 15, 600, DIM,   'left', 'middle')
 
   icon(ICON_POWER, licx, r2, iconSz, AMBER)
-  text(pwV, ltx, r2, 15, 700, WHITE, 'left', 'middle')
+  text(pwV, ltx, r2, 18, 700, WHITE, 'left', 'middle')
 
   icon(ICON_PACE, licx, r3, iconSz, AMBER)
-  text(`${paceStr}/km`, ltx, r3, 15, 700, WHITE, 'left', 'middle')
+  text(`${paceStr}/km`, ltx, r3, 18, 700, WHITE, 'left', 'middle')
 
   // ── Right stats panel (value + icon, right-aligned) ───────────────────────────
   icon(ICON_ZAP,   ricx, r0, iconSz, AMBER)
-  text(`${kcalStr} kcal`, rtx, r0, 15, 700, WHITE, 'right', 'middle')
+  text(`${kcalStr} kcal`, rtx, r0, 18, 700, WHITE, 'right', 'middle')
 
   icon(ICON_FLAG,  ricx, r1, iconSz, AMBER)
-  text(gradeStr,   rtx, r1, 15, 700, WHITE, 'right', 'middle')
+  text(gradeStr,   rtx, r1, 18, 700, WHITE, 'right', 'middle')
 
   icon(ICON_GEAR,  ricx, r2, iconSz, AMBER)
-  text('-- - --',  rtx, r2, 15, 700, WHITE, 'right', 'middle')
+  text('-- - --',  rtx, r2, 18, 700, WHITE, 'right', 'middle')
 
   icon(ICON_HEART, ricx, r3, iconSz, AMBER)
-  text(`${hrV} bpm`, rtx, r3, 15, 700, WHITE, 'right', 'middle')
+  text(`${hrV} bpm`, rtx, r3, 18, 700, WHITE, 'right', 'middle')
 
   // ── Elevation chart ───────────────────────────────────────────────────────────
   // Match preview CSS: left:29%, right:23% (width=48%), top:12%, bottom:75% (height=13%)
@@ -1246,22 +1669,22 @@ function drawHud(ctx, W, H, point, pts, animIdx, progress, totalTime, trimStart 
       ctx.beginPath(); ctx.arc(cx, cy, Math.round(5*s), 0, Math.PI*2)
       ctx.fillStyle = AMBER; ctx.fill()
       const eleM = Math.round(pts[animIdx].ele)
-      text(String(eleM), cx + Math.round(8*s), cy, 13, 700, WHITE, 'left', 'middle')
+      text(String(eleM), cx + Math.round(8*s), cy, 15, 700, WHITE, 'left', 'middle')
     }
   }
 
-  // ── Gauge geometry: mirrors CSS .hud-gauge { width: 14% } with viewBox 0 0 100 80
-  // Circle cx=50 cy=47 r=36. Rendered scale = (W*0.14)/100.
+  // ── Gauge geometry: mirrors CSS .hud-gauge { width: 18% } with viewBox 0 0 100 80
+  // Circle cx=50 cy=47 r=36. Rendered scale = (W*0.18)/100.
   // Bottom row: position:absolute; bottom:0; height:30%; padding: 0 1% 1.5%.
   // CSS padding-% is relative to containing block WIDTH, so pad-bottom = 1.5% * W.
-  const gaugeW    = Math.round(W * 0.14)           // rendered SVG width
+  const gaugeW    = Math.round(W * 0.18)           // rendered SVG width
   const gaugeH    = Math.round(gaugeW * 0.80)      // viewBox 100×80 → height = 0.8 * width
   const gaugeR    = Math.round(gaugeW * 0.36)      // r=36 in 100-unit viewBox
   const gaugeSW   = Math.max(2, Math.round(gaugeW * 0.05))  // stroke-width=5 in 100-unit viewBox
   const padBottom = Math.round(W * 0.015)          // 1.5% of W bottom padding
   const gaugeBotY = H - padBottom                  // SVG bottom edge (align-items:flex-end)
   const gaugeY    = gaugeBotY - Math.round(gaugeH * (33 / 80))  // cy=47, so 33/80 below center
-  const gaugeX    = Math.round(W * 0.08)           // center: 1% pad + 14%/2 = 8% from left
+  const gaugeX    = Math.round(W * 0.10)           // center: 1% pad + 18%/2 = 10% from left
 
   // ── Arc gauge helper ──────────────────────────────────────────────────────────
   function drawGauge(cx, cy, r, sw, maxVal, minLabel, maxLabel, valLabel) {
@@ -1309,8 +1732,8 @@ function drawHud(ctx, W, H, point, pts, animIdx, progress, totalTime, trimStart 
   drawGauge(gaugeX,     gaugeY, gaugeR, gaugeSW, 60,  '0', '60',  spd)
   drawGauge(W - gaugeX, gaugeY, gaugeR, gaugeSW, 130, '0', '130', cadV)
 
-  // ── Speed/RPM unit labels — mirrors .gauge-lbl (font-size: 0.85cqw ≈ 10px at 1920cqw) ────
-  const lblFontSz = Math.max(7, Math.round(W * 0.0052))
+  // ── Speed/RPM unit labels — mirrors .gauge-lbl (font-size: 0.85cqw) ────────
+  const lblFontSz = Math.round(W * 0.0085)
   text('km/h', gaugeX,     gaugeBotY - Math.round(gaugeH * 0.08), lblFontSz, 700, DIM, 'center', 'top')
   text('rpm',  W - gaugeX, gaugeBotY - Math.round(gaugeH * 0.08), lblFontSz, 700, DIM, 'center', 'top')
 
@@ -1342,11 +1765,11 @@ function drawHud(ctx, W, H, point, pts, animIdx, progress, totalTime, trimStart 
   }
   const maxC = Math.max(...counts, 1)
 
-  // CSS .hud-zones: flex:1; margin:0 2%; sits between two 14% gauges with 1% row padding.
-  // Zones span from (1% + 14% + 2%) = 17% to (100% - 17%) = 83% → width = 66%.
+  // CSS .hud-zones: flex:1; margin:0 2%; sits between two 18% gauges with 1% row padding.
+  // Zones span from (1% + 18% + 2%) = 21% to (100% - 21%) = 79% → width = 58%.
   // .zones-bars { height: 62% } of the gauge container height (same as gauge SVG height).
-  const zx     = Math.round(W * 0.17)                     // 17% from left
-  const zw     = Math.round(W * 0.66)                     // 66% width
+  const zx     = Math.round(W * 0.21)                     // 21% from left
+  const zw     = Math.round(W * 0.58)                     // 58% width
   const zH     = Math.round(gaugeH * 0.62)                // 62% of gauge SVG height
   const zy     = gaugeBotY - zH                           // bars sit at bottom of row
   const barGap = Math.max(2, Math.round(2 * s))
@@ -1411,7 +1834,7 @@ function copyAudioData(src, timestamp) {
 
 // ─── Minimal HUD ────────────────────────────────────────────────────────────
 function drawHudMinimal(ctx, W, H, point, pts, progress, overlayColor = '#f59e0b', locationName = '') {
-  const s = (W / 720) * hudScaleFor(W, H)
+  const s = textScale(W, H)
   ctx.save()
   const FONT   = '-apple-system, BlinkMacSystemFont, sans-serif'
   const AMBER  = overlayColor
@@ -1456,9 +1879,10 @@ function drawHudMinimal(ctx, W, H, point, pts, progress, overlayColor = '#f59e0b
       ctx.fillStyle = 'rgba(255,255,255,0.18)'
       ctx.fillRect(Math.round(colW * i) - 1, baseY - divH, 1, divH)
     }
-    text(st.val,  cx, baseY - Math.round(28 * s), 22, 700, WHITE,  'center', 'bottom')
-    text(st.unit, cx, baseY - Math.round(24 * s), 9,  600, DIM,    'center', 'top')
-    text(st.lbl,  cx, baseY,                       8,  700, DIM,    'center', 'alphabetic')
+    // CSS: .mini-val 2.8cqw→36, .mini-unit 0.9cqw→12, .mini-lbl 0.8cqw→10
+    text(st.val,  cx, baseY - Math.round(32 * s), 36, 700, WHITE,  'center', 'bottom')
+    text(st.unit, cx, baseY - Math.round(26 * s), 12, 600, DIM,    'center', 'top')
+    text(st.lbl,  cx, baseY,                       10, 700, DIM,    'center', 'alphabetic')
   })
 
   drawLocationPill(ctx, W, H, s, locationName, 'minimal', overlayColor)
@@ -1491,7 +1915,7 @@ function fmtDMS(val, posChar, negChar) {
 
 function drawHudGoPro(ctx, W, H, point, pts, animIdx, progress, totalTime, trimStart, overlayColor = '#f59e0b', locationName = '', displayTime = null) {
   const hs = hudScaleFor(W, H)
-  const s = (W / 720) * hs
+  const s = textScale(W, H)
   ctx.save()
   const FONT  = '-apple-system, BlinkMacSystemFont, sans-serif'
   const AMBER = overlayColor
@@ -1509,14 +1933,20 @@ function drawHudGoPro(ctx, W, H, point, pts, animIdx, progress, totalTime, trimS
   // GPS coordinates (top center)
   const latStr = fmtDMS(point?.lat, 'N', 'S')
   const lonStr = fmtDMS(point?.lon, 'E', 'W')
-  text(`${latStr}   ${lonStr}`, W / 2, Math.round(16 * s), 9, 500, DIM, 'center', 'top')
+  // CSS .gopro-coords: 0.85cqw→11
+  text(`${latStr}   ${lonStr}`, W / 2, Math.round(16 * s), 11, 500, DIM, 'center', 'top')
 
-  // Compass bearing (below coords)
+  // Compass bearing (below coords) — center the [arrow | gap | text] group at W/2
   const { deg, cardinal } = computeBearing(pts, animIdx)
-  const bearY = Math.round(30 * s)
-  // Draw compass arrow
-  const arrowH = Math.round(18 * s), arrowW = Math.round(8 * s)
-  const arrowX = W / 2 - Math.round(50 * s)
+  const bearY   = Math.round(30 * s)
+  const arrowH  = Math.round(18 * s), arrowW = Math.round(8 * s)
+  const bearGap = Math.round(9 * s)
+  const bearingStr = `${deg}°${cardinal}`
+  ctx.font = `700 ${Math.round(24 * s)}px ${FONT}`
+  const bearTextW = ctx.measureText(bearingStr).width
+  // Group width = arrow + gap + text; center the whole group at W/2
+  const arrowX = W / 2 - (arrowW / 2 + bearGap + bearTextW) / 2
+  const bearTextX = arrowX + arrowW / 2 + bearGap
   ctx.fillStyle = AMBER
   ctx.beginPath()
   ctx.moveTo(arrowX, bearY + arrowH * 0.08)
@@ -1531,7 +1961,8 @@ function drawHudGoPro(ctx, W, H, point, pts, animIdx, progress, totalTime, trimS
   ctx.lineTo(arrowX, bearY + arrowH * 0.45)
   ctx.lineTo(arrowX + arrowW / 2, bearY)
   ctx.closePath(); ctx.fill()
-  text(`${deg}°${cardinal}`, W / 2 - Math.round(30 * s), bearY + arrowH * 0.55, 20, 700, WHITE, 'left', 'middle')
+  // CSS .gopro-bearing-val: 1.9cqw→24
+  text(bearingStr, bearTextX, bearY + arrowH * 0.55, 24, 700, WHITE, 'left', 'middle')
 
   // Left panel: Slope + Elevation
   const lx = Math.round(28 * s)
@@ -1542,22 +1973,21 @@ function drawHudGoPro(ctx, W, H, point, pts, animIdx, progress, totalTime, trimS
   const slopeStr = `${Math.round(Math.abs(grade))}%`
   const eleStr   = `${Math.round(point?.ele ?? 0)} M`
 
-  // Slope
-  text('SLOPE',    lx + Math.round(22 * s), topPanelY,                      9,  700, DIM,   'left', 'top')
-  text(slopeStr,   lx + Math.round(22 * s), topPanelY + Math.round(15 * s), 20, 700, WHITE, 'left', 'top')
-  // Elevation
-  text('ELEVATION', lx + Math.round(22 * s), topPanelY + panelGap,                      9,  700, DIM,   'left', 'top')
-  text(eleStr,      lx + Math.round(22 * s), topPanelY + panelGap + Math.round(15 * s), 20, 700, WHITE, 'left', 'top')
+  // CSS .gopro-stat-lbl: 0.85cqw→11, .gopro-stat-val: 2.1cqw→27
+  text('SLOPE',    lx + Math.round(22 * s), topPanelY,                      11, 700, DIM,   'left', 'top')
+  text(slopeStr,   lx + Math.round(22 * s), topPanelY + Math.round(17 * s), 27, 700, WHITE, 'left', 'top')
+  text('ELEVATION', lx + Math.round(22 * s), topPanelY + panelGap,                      11, 700, DIM,   'left', 'top')
+  text(eleStr,      lx + Math.round(22 * s), topPanelY + panelGap + Math.round(17 * s), 27, 700, WHITE, 'left', 'top')
 
-  // Time and date — use precomputed displayTime (absTime + GPS offset) for accuracy
+  // CSS .gopro-datetime-time: 1.4cqw→18, .gopro-datetime-date: 0.85cqw→11
   const rawTime = displayTime
     ?? (point?.time instanceof Date ? point.time : point?.time ? new Date(point.time) : null)
   if (rawTime && !isNaN(rawTime)) {
     const timeStr = rawTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
     const dateStr = rawTime.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
     const dtY = topPanelY + panelGap * 2
-    text(timeStr, lx + Math.round(22 * s), dtY,                       14, 700, WHITE, 'left', 'top')
-    text(dateStr, lx + Math.round(22 * s), dtY + Math.round(18 * s),   9, 700, DIM,   'left', 'top')
+    text(timeStr, lx + Math.round(22 * s), dtY,                       18, 700, WHITE, 'left', 'top')
+    text(dateStr, lx + Math.round(22 * s), dtY + Math.round(22 * s),  11, 700, DIM,   'left', 'top')
   }
 
   // Small triangle icons for each stat
@@ -1578,8 +2008,8 @@ function drawHudGoPro(ctx, W, H, point, pts, animIdx, progress, totalTime, trimS
   ctx.fillStyle = grad; ctx.fillRect(0, H * 0.65, W, H * 0.35)
 
   // Large centered speed gauge — mirrors SVG: viewBox="0 0 160 110", cx=80 cy=82 r=60
-  // CSS wrap: width:clamp(100px,18cqw,220px); position:absolute; bottom:0; padding-bottom:0.5%
-  const gaugeW  = Math.round(W * 0.18 * hs)                  // 18cqw matches CSS clamp midpoint
+  // CSS wrap: width:clamp(100px,24cqw,460px); position:absolute; bottom:0; padding-bottom:0.5%
+  const gaugeW  = Math.round(W * 0.24 * hs)                  // 24cqw matches CSS clamp midpoint
   const gaugeH  = Math.round(gaugeW * 110 / 160)             // viewBox aspect ratio
   const gaugeCX = W / 2
   const padB    = Math.round(W * 0.005)                       // 0.5% bottom padding on wrap
@@ -1642,7 +2072,7 @@ function drawHudGoPro(ctx, W, H, point, pts, animIdx, progress, totalTime, trimS
 // ─── Sport HUD ───────────────────────────────────────────────────────────────
 function drawHudSport(ctx, W, H, point, progress, overlayColor = '#f59e0b', locationName = '') {
   const hs = hudScaleFor(W, H)
-  const s = (W / 720) * hs
+  const s = textScale(W, H)
   ctx.save()
   const FONT = '-apple-system, BlinkMacSystemFont, sans-serif'
   const CYAN = overlayColor
@@ -1659,23 +2089,23 @@ function drawHudSport(ctx, W, H, point, progress, overlayColor = '#f59e0b', loca
 
   // Distance (top-left)
   const dist = ((point?.cumDist ?? 0) / 1000).toFixed(1)
-  text(dist, Math.round(20 * s), Math.round(20 * s), 22, 700, WHITE, 'left', 'top')
-  text('KM', Math.round(20 * s) + ctx.measureText(dist).width + Math.round(6 * s), Math.round(24 * s), 9, 700, CYAN, 'left', 'top')
+  text(dist, Math.round(20 * s), Math.round(20 * s), 36, 700, WHITE, 'left', 'top')
+  text('KM', Math.round(20 * s) + ctx.measureText(dist).width + Math.round(6 * s), Math.round(24 * s), 13, 700, CYAN, 'left', 'top')
 
   // GPS coords (top-right, below map inset area)
   const latStr = fmtDMS(point?.lat, 'N', 'S')
   const lonStr = fmtDMS(point?.lon, 'E', 'W')
-  text(lonStr, W - Math.round(W * 0.22) - Math.round(8 * s), Math.round(14 * s), 8, 500, CYAN_DIM, 'right', 'top')
-  text(latStr, W - Math.round(W * 0.22) - Math.round(8 * s), Math.round(26 * s), 8, 500, CYAN_DIM, 'right', 'top')
+  text(lonStr, W - Math.round(W * 0.22) - Math.round(8 * s), Math.round(14 * s), 10, 500, CYAN_DIM, 'right', 'top')
+  text(latStr, W - Math.round(W * 0.22) - Math.round(8 * s), Math.round(26 * s), 10, 500, CYAN_DIM, 'right', 'top')
 
   // Slope (center-left)
   const grade = point?.grade ?? 0
-  text('SLOPE', Math.round(28 * s), Math.round(H * 0.42), 8, 700, 'rgba(255,255,255,0.6)', 'left', 'top')
-  text(grade.toFixed(2), Math.round(28 * s), Math.round(H * 0.42) + Math.round(14 * s), 28, 700, WHITE, 'left', 'top')
-  text('%', Math.round(28 * s), Math.round(H * 0.42) + Math.round(52 * s), 10, 700, CYAN, 'left', 'top')
+  text('SLOPE', Math.round(28 * s), Math.round(H * 0.42), 11, 700, 'rgba(255,255,255,0.6)', 'left', 'top')
+  text(grade.toFixed(2), Math.round(28 * s), Math.round(H * 0.42) + Math.round(14 * s), 38, 700, WHITE, 'left', 'top')
+  text('%', Math.round(28 * s), Math.round(H * 0.42) + Math.round(52 * s), 13, 700, CYAN, 'left', 'top')
 
   // Circular speed gauge (bottom-left)
-  const gSize  = Math.round(W * 0.18 * hs)     // diameter
+  const gSize  = Math.round(W * 0.24 * hs)     // diameter
   const r      = gSize * 62 / 160               // scaled radius (62/160 from viewBox)
   const cx     = Math.round(W * 0.01) + gSize / 2
   const cy     = H - Math.round(H * 0.01) - gSize / 2
@@ -1737,7 +2167,7 @@ function drawHudSport(ctx, W, H, point, progress, overlayColor = '#f59e0b', loca
 // ─── Cycling HUD ─────────────────────────────────────────────────────────────
 function drawHudCycling(ctx, W, H, point, pts, animIdx, progress, overlayColor = '#f59e0b', locationName = '') {
   const hs = hudScaleFor(W, H)
-  const s = (W / 720) * hs
+  const s = textScale(W, H)
   ctx.save()
   const FONT   = '-apple-system, BlinkMacSystemFont, sans-serif'
   const TEAL   = overlayColor
@@ -1754,20 +2184,23 @@ function drawHudCycling(ctx, W, H, point, pts, animIdx, progress, overlayColor =
 
   // Top-left: ELEVATION label + value
   const lx = Math.round(20 * s), ty = Math.round(14 * s)
-  text('ELEVATION', lx, ty, 8, 700, TEAL, 'left', 'top')
-  text(`${Math.round(point?.ele ?? 0)} M`, lx, ty + Math.round(14 * s), 20, 700, WHITE, 'left', 'top')
+  text('ELEVATION', lx, ty, 10, 700, TEAL, 'left', 'top')
+  text(`${Math.round(point?.ele ?? 0)} M`, lx, ty + Math.round(14 * s), 27, 700, WHITE, 'left', 'top')
 
   // Top-right: TOTAL DISTANCE label + value
   const rx = W - Math.round(20 * s)
-  const dist = ((point?.cumDist ?? 0) / 1000).toFixed(2)
-  text('TOTAL DISTANCE', rx, ty, 8, 700, TEAL, 'right', 'top')
-  text(`${dist} KM`, rx, ty + Math.round(14 * s), 20, 700, WHITE, 'right', 'top')
+  const dist = ((point?.cumDist ?? 0) / 1000).toFixed(1)
+  text('TOTAL DISTANCE', rx, ty, 10, 700, TEAL, 'right', 'top')
+  text(`${dist} KM`, rx, ty + Math.round(14 * s), 27, 700, WHITE, 'right', 'top')
 
   // Top-center: compass rose
   const compassCX = W / 2, compassCY = Math.round(28 * s), compassR = Math.round(18 * s)
   ctx.beginPath(); ctx.arc(compassCX, compassCY, compassR, 0, Math.PI * 2)
   ctx.strokeStyle = 'rgba(255,255,255,0.2)'; ctx.lineWidth = Math.round(s); ctx.stroke()
-  text('N', compassCX, compassCY - compassR * 0.55, 6, 700, 'rgba(255,255,255,0.55)', 'center', 'middle')
+  text('N', compassCX,                   compassCY - compassR * 0.80, 6, 700, 'rgba(255,255,255,0.55)', 'center', 'middle')
+  text('S', compassCX,                   compassCY + compassR * 0.80, 5, 400, 'rgba(255,255,255,0.35)', 'center', 'middle')
+  text('W', compassCX - compassR * 0.80, compassCY,                   5, 400, 'rgba(255,255,255,0.35)', 'center', 'middle')
+  text('E', compassCX + compassR * 0.80, compassCY,                   5, 400, 'rgba(255,255,255,0.35)', 'center', 'middle')
   // North arrow (teal)
   ctx.fillStyle = TEAL
   ctx.beginPath()
@@ -1783,7 +2216,7 @@ function drawHudCycling(ctx, W, H, point, pts, animIdx, progress, overlayColor =
   ctx.closePath(); ctx.fill()
 
   // Center-left: D-shape arc speed gauge
-  const gaugeSize = Math.round(W * 0.20 * hs)
+  const gaugeSize = Math.round(W * 0.26 * hs)
   const r = gaugeSize * 65 / 160                  // scaled radius
   const gcx = Math.round(W * 0.02) + gaugeSize / 2
   const gcy = Math.round(H * 0.72)                // center sits below visible midpoint → top portion shows
@@ -1808,11 +2241,11 @@ function drawHudCycling(ctx, W, H, point, pts, animIdx, progress, overlayColor =
   }
 
   // "SPEED" label above
-  text('SPEED', gcx, gcy - r - Math.round(14 * s), 8, 700, TEAL_D, 'center', 'bottom')
+  text('SPEED', gcx, gcy - r - Math.round(14 * s), 11, 700, TEAL_D, 'center', 'bottom')
   // Speed number (centered in arc)
   text(spd.toFixed(0), gcx, gcy - Math.round(r * 0.10), 36, 700, WHITE, 'center', 'middle')
   // "KM/H" below the speed number
-  text('KM/H', gcx, gcy + Math.round(r * 0.30), 8, 700, TEAL_D, 'center', 'top')
+  text('KM/H', gcx, gcy + Math.round(r * 0.30), 11, 700, TEAL_D, 'center', 'top')
 
   // Min/max labels on arc
   const lbR = r + Math.round(12 * s)
@@ -1823,18 +2256,559 @@ function drawHudCycling(ctx, W, H, point, pts, animIdx, progress, overlayColor =
   const sx = gcx + gaugeSize / 2 + Math.round(30 * s)
   const sy = gcy - r - Math.round(10 * s)
   const grade = point?.grade ?? 0
-  text('SLOPE', sx, sy, 8, 700, 'rgba(255,255,255,0.65)', 'left', 'top')
-  text(grade.toFixed(2), sx, sy + Math.round(16 * s), 32, 700, WHITE, 'left', 'top')
-  text('%', sx, sy + Math.round(58 * s), 11, 700, TEAL, 'left', 'top')
+  text('SLOPE', sx, sy, 11, 700, 'rgba(255,255,255,0.65)', 'left', 'top')
+  text(grade.toFixed(2), sx, sy + Math.round(16 * s), 49, 700, WHITE, 'left', 'top')
+  text('%', sx, sy + Math.round(58 * s), 14, 700, TEAL, 'left', 'top')
 
   // Bottom: GPS coordinates
   const latStr = fmtDMS(point?.lat, 'N', 'S')
   const lonStr = fmtDMS(point?.lon, 'E', 'W')
-  text(lonStr, Math.round(20 * s), H - Math.round(22 * s), 8, 500, 'rgba(255,255,255,0.55)', 'left', 'bottom')
-  text(latStr, Math.round(20 * s), H - Math.round(10 * s), 8, 500, 'rgba(255,255,255,0.55)', 'left', 'bottom')
+  text(lonStr, Math.round(20 * s), H - Math.round(22 * s), 11, 500, 'rgba(255,255,255,0.55)', 'left', 'bottom')
+  text(latStr, Math.round(20 * s), H - Math.round(10 * s), 11, 500, 'rgba(255,255,255,0.55)', 'left', 'bottom')
 
   drawLocationPill(ctx, W, H, s, locationName, 'cycling', overlayColor)
   drawWatermark(ctx, W, H, s)
+  ctx.restore()
+}
+
+// ─── Sticker 2: full-route map (replaces inset) ───────────────────────────────
+function drawMapFull(ctx, W, H, pts, animIdx, maxSpeed, segStart = 0, overlayColor = '#f59e0b') {
+  const latMin = pts.reduce((a,p) => Math.min(a,p.lat), Infinity)
+  const latMax = pts.reduce((a,p) => Math.max(a,p.lat), -Infinity)
+  const lonMin = pts.reduce((a,p) => Math.min(a,p.lon), Infinity)
+  const lonMax = pts.reduce((a,p) => Math.max(a,p.lon), -Infinity)
+  const pad = Math.round(Math.min(W, H) * 0.08)
+  const toXY = (lat, lon) => [
+    pad + (lon - lonMin) / ((lonMax - lonMin) || 1) * (W - 2*pad),
+    pad + (1 - (lat - latMin) / ((latMax - latMin) || 1)) * (H - 2*pad),
+  ]
+
+  ctx.fillStyle = 'rgba(0,8,20,0.87)'; ctx.fillRect(0, 0, W, H)
+
+  // Glow pass
+  ctx.beginPath()
+  pts.forEach((p,i) => { const [x,y] = toXY(p.lat,p.lon); i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y) })
+  ctx.shadowColor = overlayColor; ctx.shadowBlur = Math.round(W * 0.008)
+  ctx.strokeStyle = hexToRgba(overlayColor, 0.22); ctx.lineWidth = Math.max(3, W * 0.005)
+  ctx.stroke(); ctx.shadowBlur = 0
+
+  // Full faint trail
+  ctx.beginPath()
+  pts.forEach((p,i) => { const [x,y] = toXY(p.lat,p.lon); i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y) })
+  ctx.strokeStyle = 'rgba(255,255,255,0.14)'; ctx.lineWidth = Math.max(1, W * 0.0014); ctx.stroke()
+
+  // Speed-colored traveled portion
+  for (let i = Math.max(1, segStart); i <= animIdx && i < pts.length; i++) {
+    const t = pts[i].speedSmooth / maxSpeed
+    const r = Math.round(lerp(30,255,t)), g = Math.round(lerp(100,80,t)), b = Math.round(lerp(255,30,t))
+    const [x0,y0] = toXY(pts[i-1].lat, pts[i-1].lon), [x1,y1] = toXY(pts[i].lat, pts[i].lon)
+    ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1)
+    ctx.strokeStyle = `rgb(${r},${g},${b})`; ctx.lineWidth = Math.max(1.5, W * 0.0024); ctx.stroke()
+  }
+
+  const mr = Math.max(4, Math.round(W * 0.006))
+
+  const [sx,sy] = toXY(pts[0].lat, pts[0].lon)
+  ctx.beginPath(); ctx.arc(sx, sy, mr, 0, Math.PI*2)
+  ctx.fillStyle = '#00e676'; ctx.shadowColor = '#00e676'; ctx.shadowBlur = mr*1.5; ctx.fill(); ctx.shadowBlur = 0
+  ctx.beginPath(); ctx.arc(sx, sy, mr*1.8, 0, Math.PI*2)
+  ctx.strokeStyle = 'rgba(0,230,118,0.35)'; ctx.lineWidth = Math.max(1, mr*0.25); ctx.stroke()
+
+  const ep = pts[pts.length-1], [ex,ey] = toXY(ep.lat, ep.lon)
+  ctx.beginPath(); ctx.arc(ex, ey, mr, 0, Math.PI*2)
+  ctx.fillStyle = '#ff5252'; ctx.shadowColor = '#ff5252'; ctx.shadowBlur = mr*1.5; ctx.fill(); ctx.shadowBlur = 0
+  ctx.beginPath(); ctx.arc(ex, ey, mr*1.8, 0, Math.PI*2)
+  ctx.strokeStyle = 'rgba(255,82,82,0.35)'; ctx.lineWidth = Math.max(1, mr*0.25); ctx.stroke()
+
+  if (animIdx < pts.length) {
+    const [cx,cy] = toXY(pts[animIdx].lat, pts[animIdx].lon)
+    ctx.beginPath(); ctx.arc(cx, cy, mr*0.7, 0, Math.PI*2); ctx.fillStyle = '#fff'; ctx.fill()
+    ctx.beginPath(); ctx.arc(cx, cy, mr*1.3, 0, Math.PI*2)
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = Math.max(1, mr*0.2); ctx.stroke()
+  }
+}
+
+// ─── Sticker 1: Finisher card (right stats panel) ────────────────────────────
+function drawHudSticker1(ctx, W, H, pts, totalTime, overlayColor = '#f59e0b', locationName = '') {
+  if (!pts.length) return
+  const hs = hudScaleFor(W, H)
+  const s = textScale(W, H)
+  ctx.save()
+  const FONT  = '-apple-system, BlinkMacSystemFont, sans-serif'
+  const AMBER = overlayColor
+  const WHITE = '#ffffff'
+  const DIM   = 'rgba(255,255,255,0.45)'
+
+  function text(str, x, y, size, weight, color, align = 'left', baseline = 'alphabetic') {
+    ctx.font = `${weight} ${Math.round(size * s)}px ${FONT}`
+    ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = baseline
+    ctx.shadowColor = 'rgba(0,0,0,0.9)'; ctx.shadowBlur = Math.round(4 * s)
+    ctx.fillText(str, x, y)
+    ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'
+  }
+
+  // Right gradient panel
+  const gx = Math.round(W * 0.48)
+  const grad = ctx.createLinearGradient(gx, 0, W, 0)
+  grad.addColorStop(0,    'transparent')
+  grad.addColorStop(0.18, 'rgba(0,0,0,0.80)')
+  grad.addColorStop(1,    'rgba(0,0,0,0.92)')
+  ctx.fillStyle = grad; ctx.fillRect(gx, 0, W - gx, H)
+
+  const panelCX = Math.round(W * 0.745)
+
+  const totalDist = ((pts[pts.length-1].cumDist / 1000).toFixed(1))
+  const totalGain = Math.round(pts[pts.length-1].cumElevGain ?? 0)
+  const hT = Math.floor(totalTime / 3600000), mT = Math.floor((totalTime % 3600000) / 60000)
+  const timeStr = hT > 0 ? `${hT}h ${String(mT).padStart(2,'0')}m` : (mT > 0 ? `${mT}m` : '--')
+
+  if (locationName) {
+    text(locationName.split(',')[0].trim().toUpperCase(), panelCX, Math.round(H * 0.20), 14, 700, hexToRgba(AMBER, 0.9), 'center', 'middle')
+  }
+
+  // Large distance number
+  const distY  = Math.round(H * 0.36)
+  const distFS = Math.round(Math.min(W * 0.062 * hs, H * 0.09))
+  ctx.font = `900 ${distFS}px ${FONT}`
+  ctx.fillStyle = AMBER; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
+  ctx.shadowColor = 'rgba(0,0,0,0.9)'; ctx.shadowBlur = Math.round(10 * s)
+  ctx.fillText(totalDist, panelCX, distY); ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'
+
+  const kmFS  = Math.round(distFS * 0.42)
+  const finFS = Math.round(distFS * 0.22)
+  ctx.font = `900 ${kmFS}px ${FONT}`
+  ctx.fillStyle = AMBER; ctx.textAlign = 'center'; ctx.textBaseline = 'top'
+  ctx.shadowColor = 'rgba(0,0,0,0.9)'; ctx.shadowBlur = Math.round(4 * s)
+  ctx.fillText('KM', panelCX, distY + Math.round(2 * s))
+  ctx.font = `800 ${finFS}px ${FONT}`; ctx.fillStyle = WHITE
+  ctx.fillText('FINISHER', panelCX, distY + kmFS + Math.round(4 * s))
+  ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'
+
+  // Divider
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 0.5
+  ctx.beginPath()
+  ctx.moveTo(panelCX - Math.round(70*s), Math.round(H * 0.50))
+  ctx.lineTo(panelCX + Math.round(70*s), Math.round(H * 0.50))
+  ctx.stroke()
+
+  // Stat rows
+  const ICON_ELEV = 'M12 2 9 8h6L12 2zm0 20 3-6H9l3 6zM2 12l6-3v6L2 12zm20 0-6 3V9l6 3z'
+  const ICON_CLK  = 'M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z'
+  const ICON_PIN  = 'M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z'
+  const rows = [
+    { icon: ICON_ELEV, lbl: 'ELEV GAIN', val: `${totalGain.toLocaleString()} m` },
+    { icon: ICON_CLK,  lbl: 'TIME',      val: timeStr },
+    { icon: ICON_PIN,  lbl: 'DISTANCE',  val: `${totalDist} km` },
+  ]
+  const statsTop = Math.round(H * 0.54), statsGap = Math.round(H * 0.145)
+  const iSz = Math.round(30 * s), lx = panelCX - Math.round(85 * s)
+
+  rows.forEach((st, i) => {
+    const cy = statsTop + i * statsGap
+    ctx.save()
+    ctx.translate(lx, cy - iSz / 2); ctx.scale(iSz / 24, iSz / 24)
+    ctx.fillStyle = hexToRgba(AMBER, 0.78)
+    ctx.shadowColor = 'rgba(0,0,0,0.7)'; ctx.shadowBlur = 3
+    ctx.fill(new Path2D(st.icon)); ctx.restore()
+    const tx = lx + iSz + Math.round(9 * s)
+    text(st.lbl, tx, cy - Math.round(8 * s), 10,  700, DIM,   'left', 'top')
+    text(st.val, tx, cy + Math.round(6 * s), 31,  700, WHITE, 'left', 'top')
+  })
+
+  drawWatermark(ctx, W, H, s)
+  ctx.restore()
+}
+
+// ─── Sticker 2: Route card (labels + stats over full-map canvas) ──────────────
+function drawHudSticker2(ctx, W, H, pts, totalTime, overlayColor = '#f59e0b', locationName = '') {
+  if (!pts.length) return
+  const hs = hudScaleFor(W, H)
+  const s = textScale(W, H)
+  ctx.save()
+  const FONT  = '-apple-system, BlinkMacSystemFont, sans-serif'
+  const WHITE = '#ffffff'
+  const DIM   = 'rgba(255,255,255,0.5)'
+
+  function text(str, x, y, size, weight, color, align = 'left', baseline = 'alphabetic') {
+    ctx.font = `${weight} ${Math.round(size * s)}px ${FONT}`
+    ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = baseline
+    ctx.shadowColor = 'rgba(0,0,0,0.85)'; ctx.shadowBlur = Math.round(4 * s)
+    ctx.fillText(str, x, y)
+    ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'
+  }
+
+  function fmtCoord(p) {
+    if (!p) return '--'
+    return `${Math.abs(p.lat).toFixed(3)}°${p.lat >= 0 ? 'N':'S'}  ${Math.abs(p.lon).toFixed(3)}°${p.lon >= 0 ? 'E':'W'}`
+  }
+
+  const pad = Math.round(10 * s), dotR = Math.round(6 * s)
+  const bPad = Math.round(6 * s), bPadV = Math.round(4 * s)
+
+  const totalDist = ((pts[pts.length-1].cumDist / 1000).toFixed(1))
+  const totalGain = Math.round(pts[pts.length-1].cumElevGain ?? 0)
+  const hT = Math.floor(totalTime / 3600000), mT = Math.floor((totalTime % 3600000) / 60000)
+  const timeStr = hT > 0 ? `${hT}h ${String(mT).padStart(2,'0')}m` : (mT > 0 ? `${mT}m` : '--')
+
+  // Stats box (top-right)
+  const statsRows = [
+    { lbl: 'DISTANCE',  val: `${totalDist} km` },
+    { lbl: 'TIME',      val: timeStr },
+    { lbl: 'ELEV GAIN', val: `${totalGain.toLocaleString()} m` },
+  ]
+  const rowH   = Math.round(22 * s)
+  const statsW = Math.round(W * 0.25)
+  const statsH = bPadV * 2 + statsRows.length * rowH
+  const statsX = W - pad - statsW, statsY = pad
+
+  ctx.save()
+  rrect(ctx, statsX, statsY, statsW, statsH, Math.round(8 * s))
+  ctx.fillStyle = 'rgba(0,0,0,0.70)'; ctx.fill()
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)'; ctx.lineWidth = 0.5; ctx.stroke()
+  ctx.restore()
+  statsRows.forEach((st, i) => {
+    const y = statsY + bPadV + i * rowH + rowH / 2
+    text(st.lbl, statsX + Math.round(8*s), y - Math.round(3*s), 10, 700, DIM,   'left', 'top')
+    text(st.val, statsX + statsW - Math.round(8*s), y + Math.round(3*s), 18, 700, WHITE, 'right', 'bottom')
+  })
+
+  // Start badge (top-left)
+  const sbW = Math.round(W * 0.35), sbH = Math.round(40 * s)
+  ctx.save()
+  rrect(ctx, pad, pad, sbW, sbH, Math.round(6 * s))
+  ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.fill()
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)'; ctx.lineWidth = 0.5; ctx.stroke()
+  ctx.restore()
+  const sdCX = pad + bPad + dotR, sdCY = pad + sbH / 2
+  ctx.beginPath(); ctx.arc(sdCX, sdCY, dotR, 0, Math.PI*2)
+  ctx.fillStyle = '#00e676'; ctx.shadowColor = '#00e676'; ctx.shadowBlur = dotR*1.2; ctx.fill()
+  ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'
+  const sTX = sdCX + dotR + Math.round(6*s)
+  text('START',              sTX, sdCY - Math.round(5*s), 14, 800, WHITE, 'left', 'bottom')
+  text(fmtCoord(pts[0]),     sTX, sdCY + Math.round(3*s), 10, 500, DIM,   'left', 'top')
+
+  // End badge (bottom-right)
+  const ebW = Math.round(W * 0.35), ebH = Math.round(40 * s)
+  const ebX = W - pad - ebW, ebY = H - Math.round(38*s) - ebH
+  ctx.save()
+  rrect(ctx, ebX, ebY, ebW, ebH, Math.round(6 * s))
+  ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.fill()
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)'; ctx.lineWidth = 0.5; ctx.stroke()
+  ctx.restore()
+  const edCX = ebX + bPad + dotR, edCY = ebY + ebH / 2
+  ctx.beginPath(); ctx.arc(edCX, edCY, dotR, 0, Math.PI*2)
+  ctx.fillStyle = '#ff5252'; ctx.shadowColor = '#ff5252'; ctx.shadowBlur = dotR*1.2; ctx.fill()
+  ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'
+  const eTX = edCX + dotR + Math.round(6*s)
+  text('END',                        eTX, edCY - Math.round(5*s), 14, 800, WHITE, 'left', 'bottom')
+  text(fmtCoord(pts[pts.length-1]), eTX, edCY + Math.round(3*s), 10, 500, DIM,   'left', 'top')
+
+  if (locationName) text(locationName.toUpperCase(), W/2, H/2, 23, 900, WHITE, 'center', 'middle')
+
+  drawWatermark(ctx, W, H, s)
+  ctx.restore()
+}
+
+// ─── Tactical HUD ────────────────────────────────────────────────────────────
+function drawHudTac(ctx, W, H, point, pts, animIdx, progress, totalTime, overlayColor = '#f59e0b') {
+  const hs = hudScaleFor(W, H)
+  const s  = textScale(W, H)
+  ctx.save()
+  const FONT  = '-apple-system, BlinkMacSystemFont, sans-serif'
+  const WHITE = '#ffffff'
+  const DIM   = 'rgba(255,255,255,0.42)'
+  const DIM2  = 'rgba(255,255,255,0.32)'
+
+  function text(str, x, y, size, weight, color, align = 'left', baseline = 'top') {
+    ctx.font = `${weight} ${Math.round(size * s)}px ${FONT}`
+    ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = baseline
+    ctx.shadowColor = 'rgba(0,0,0,0.92)'; ctx.shadowBlur = Math.round(5 * s)
+    ctx.fillText(str, x, y)
+    ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'
+  }
+
+  // Outer border
+  ctx.strokeStyle = 'rgba(255,255,255,0.28)'
+  ctx.lineWidth = Math.max(1, Math.round(s))
+  ctx.strokeRect(0.5, 0.5, W - 1, H - 1)
+
+  // Corner bracket size
+  const C = Math.round(Math.min(30, W * 0.022))
+  const BW = Math.max(1.5, Math.round(2 * s))
+  ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = BW
+  const corners = [[0, 0, 1, 1], [W, 0, -1, 1], [0, H, 1, -1], [W, H, -1, -1]]
+  for (const [ox, oy, dx, dy] of corners) {
+    ctx.beginPath()
+    ctx.moveTo(ox + dx * C, oy); ctx.lineTo(ox, oy); ctx.lineTo(ox, oy + dy * C)
+    ctx.stroke()
+  }
+
+  const BOTTOM_H = H * 0.12
+  const CONTENT_BOT = H - BOTTOM_H
+  const LEFT_W  = W * 0.26
+  const RIGHT_W = W * 0.26
+  const PAD_X = Math.round(Math.max(8, W * 0.014))
+  const PAD_Y = Math.round(Math.max(8, H * 0.014))
+
+  // Left panel background gradient
+  const lgrd = ctx.createLinearGradient(0, 0, LEFT_W, 0)
+  lgrd.addColorStop(0, 'rgba(0,0,0,0.68)'); lgrd.addColorStop(1, 'rgba(0,0,0,0)')
+  ctx.fillStyle = lgrd; ctx.fillRect(0, 0, LEFT_W, CONTENT_BOT)
+
+  // Right panel background gradient
+  const rgrd = ctx.createLinearGradient(W - RIGHT_W, 0, W, 0)
+  rgrd.addColorStop(0, 'rgba(0,0,0,0)'); rgrd.addColorStop(1, 'rgba(0,0,0,0.68)')
+  ctx.fillStyle = rgrd; ctx.fillRect(W - RIGHT_W, 0, RIGHT_W, CONTENT_BOT)
+
+  // Bottom strip
+  ctx.fillStyle = 'rgba(0,0,0,0.52)'
+  ctx.fillRect(0, CONTENT_BOT, W, BOTTOM_H)
+  ctx.strokeStyle = 'rgba(255,255,255,0.14)'; ctx.lineWidth = 1
+  ctx.beginPath(); ctx.moveTo(0, CONTENT_BOT); ctx.lineTo(W, CONTENT_BOT); ctx.stroke()
+
+  // Vertical dividers
+  const vgrd = ctx.createLinearGradient(0, H * 0.04, 0, CONTENT_BOT)
+  vgrd.addColorStop(0, 'rgba(255,255,255,0)'); vgrd.addColorStop(0.15, 'rgba(255,255,255,0.22)')
+  vgrd.addColorStop(0.85, 'rgba(255,255,255,0.22)'); vgrd.addColorStop(1, 'rgba(255,255,255,0)')
+  ctx.strokeStyle = vgrd; ctx.lineWidth = 1
+  ctx.beginPath(); ctx.moveTo(LEFT_W, H * 0.04); ctx.lineTo(LEFT_W, CONTENT_BOT); ctx.stroke()
+  ctx.beginPath(); ctx.moveTo(W - RIGHT_W, H * 0.04); ctx.lineTo(W - RIGHT_W, CONTENT_BOT); ctx.stroke()
+
+  // ── Left panel ──────────────────────────────────────────────────────────────
+  const spd = point?.speedSmooth ?? 0
+  const dist = (point?.cumDist ?? 0) / 1000
+  const grade = point?.grade ?? 0
+  const paceStr = spd > 0.5 ? (() => { const pm = 60 / spd; const mm = Math.floor(pm); return `${mm}:${String(Math.round((pm-mm)*60)).padStart(2,'0')}` })() : '--'
+
+  // Font sizes derived from CSS cqw values: size = cqw * 12.8 (reference width 1280px)
+  // .tac-lbl / .tac-unit: 0.78cqw → 10, .tac-big: 5.8cqw → 74, .tac-big--md: 3.4cqw → 44
+  // .tac-mini-lbl: 0.65cqw → 8, .tac-mini-val: 0.92cqw → 12
+  // .tac-rlbl: 0.65cqw → 8, .tac-rval: 2.8cqw → 36, .tac-bval: 0.72cqw → 9
+  const LBL_SZ   = 10
+  const BIG_SZ   = 74
+  const MD_SZ    = 44
+  const MINI_L   = 8
+  const MINI_V   = 12
+  const R_LBL    = 8
+  const R_VAL    = 36
+  const BOT_SZ   = 9
+
+  let ly = PAD_Y
+  text('SPEED', PAD_X, ly, LBL_SZ, 700, DIM)
+  ly += Math.round(12 * s)
+  text(spd.toFixed(0), PAD_X, ly, BIG_SZ, 800, WHITE)
+  ly += Math.round(80 * s)
+  text('KM/H', PAD_X, ly, LBL_SZ, 700, DIM2)
+  ly += Math.round(18 * s)
+
+  // Separator
+  ctx.fillStyle = 'rgba(255,255,255,0.14)'; ctx.fillRect(PAD_X, ly, LEFT_W - PAD_X * 2, 1); ly += Math.round(10 * s)
+
+  // Mini rows
+  text('GRADE', PAD_X, ly, MINI_L, 700, DIM2)
+  text(`${grade.toFixed(1)}%`, LEFT_W - PAD_X, ly, MINI_V, 700, 'rgba(255,255,255,0.82)', 'right')
+  ly += Math.round(17 * s)
+  text('PACE', PAD_X, ly, MINI_L, 700, DIM2)
+  text(paceStr, LEFT_W - PAD_X, ly, MINI_V, 700, 'rgba(255,255,255,0.82)', 'right')
+  ly += Math.round(17 * s)
+
+  // Separator
+  ctx.fillStyle = 'rgba(255,255,255,0.14)'; ctx.fillRect(PAD_X, ly, LEFT_W - PAD_X * 2, 1); ly += Math.round(10 * s)
+
+  text('DISTANCE', PAD_X, ly, LBL_SZ, 700, DIM)
+  ly += Math.round(12 * s)
+  text(dist.toFixed(2), PAD_X, ly, MD_SZ, 800, WHITE)
+  ly += Math.round(48 * s)
+  text('KM', PAD_X, ly, LBL_SZ, 700, DIM2)
+
+  // ── Right panel ─────────────────────────────────────────────────────────────
+  const ele = Math.round(point?.ele ?? 0)
+  const totalDist = (pts[pts.length - 1]?.cumDist ?? 0) / 1000
+  const remain = Math.max(0, totalDist - dist)
+  const hr = point?.hr
+  const cad = point?.cadence
+  let elevGain = 0
+  for (let i = Math.max(1, 0); i <= animIdx && i < pts.length; i++) {
+    const d = (pts[i].ele ?? 0) - (pts[i-1].ele ?? 0)
+    if (d > 0) elevGain += d
+  }
+
+  const rStats = [
+    { lbl: 'ELEVATION', val: `${ele}`, unit: 'M' },
+    { lbl: 'REMAIN',    val: remain.toFixed(1), unit: 'KM' },
+    { lbl: hr != null ? 'HEART RATE' : 'ELEV GAIN', val: hr != null ? String(Math.round(hr)) : String(Math.round(elevGain)), unit: hr != null ? 'BPM' : 'M' },
+    { lbl: cad != null ? 'CADENCE' : 'GRADE', val: cad != null ? String(Math.round(cad)) : `${grade.toFixed(1)}`, unit: cad != null ? 'RPM' : '%' },
+  ]
+
+  const rightRowH = (CONTENT_BOT - PAD_Y * 2) / rStats.length
+  const rx = W - RIGHT_W + PAD_X
+  for (let i = 0; i < rStats.length; i++) {
+    const ry = PAD_Y + i * rightRowH
+    text(rStats[i].lbl, rx, ry, R_LBL, 700, DIM2)
+    const valY = ry + Math.round(10 * s)
+    text(rStats[i].val, rx, valY, R_VAL, 800, WHITE)
+    const valW = ctx.measureText(rStats[i].val).width
+    const unitSz = Math.round(R_VAL * 0.38)  // .tac-runit: 0.38em of rval
+    text(` ${rStats[i].unit}`, rx + valW, valY + Math.round(22 * s), unitSz, 600, DIM2, 'left', 'bottom')
+    // Separator (not after last item)
+    if (i < rStats.length - 1) {
+      const sepY = ry + rightRowH - Math.round(2 * s)
+      ctx.fillStyle = 'rgba(255,255,255,0.1)'; ctx.fillRect(rx, sepY, RIGHT_W - PAD_X * 2, 1)
+    }
+  }
+
+  // ── Bottom strip ─────────────────────────────────────────────────────────────
+  const progBarY = CONTENT_BOT + Math.round(BOTTOM_H * 0.28)
+  ctx.fillStyle = 'rgba(255,255,255,0.18)'; ctx.fillRect(PAD_X, progBarY, W - PAD_X * 2, 1)
+  ctx.fillStyle = 'rgba(255,255,255,0.72)'; ctx.fillRect(PAD_X, progBarY, (W - PAD_X * 2) * Math.min(1, progress), 1)
+
+  const labelY = CONTENT_BOT + Math.round(BOTTOM_H * 0.55)
+  const elapsedSec = progress * totalTime
+  const timeCur  = fmtTime(elapsedSec * 1000)
+  const timeTotal = fmtTime(totalTime * 1000)
+  text(timeCur,           PAD_X,       labelY, BOT_SZ, 600, DIM, 'left', 'top')
+  text(`${totalDist.toFixed(1)} KM`, W / 2, labelY, BOT_SZ, 600, DIM, 'center', 'top')
+  text(timeTotal,         W - PAD_X,   labelY, BOT_SZ, 600, DIM, 'right', 'top')
+
+  ctx.restore()
+}
+
+// ─── Dashboard HUD ───────────────────────────────────────────────────────────
+function drawHudDashboard(ctx, W, H, point, pts, animIdx, progress, totalTime, overlayColor = '#f59e0b') {
+  const hs = hudScaleFor(W, H)
+  const s  = textScale(W, H)
+  ctx.save()
+  const FONT  = '-apple-system, BlinkMacSystemFont, sans-serif'
+  const WHITE = '#ffffff'
+  const ACCENT = overlayColor
+  const DIM    = 'rgba(255,255,255,0.38)'
+
+  function text(str, x, y, size, weight, color, align = 'left', baseline = 'top') {
+    ctx.font = `${weight} ${Math.round(size * s)}px ${FONT}`
+    ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = baseline
+    ctx.shadowColor = 'rgba(0,0,0,0.85)'; ctx.shadowBlur = Math.round(4 * s)
+    ctx.fillText(str, x, y)
+    ctx.shadowBlur = 0; ctx.shadowColor = 'transparent'
+  }
+
+  const PROG_H  = Math.round(Math.max(22, H * 0.028))  // progress row at very bottom
+  const BAR_H   = H * 0.34                              // main bar height
+  const BAR_Y   = H - PROG_H - BAR_H                   // bar top y
+
+  // Main bar background
+  ctx.fillStyle = 'rgba(0,0,0,0.82)'
+  ctx.fillRect(0, BAR_Y, W, BAR_H)
+  ctx.strokeStyle = 'rgba(255,255,255,0.1)'; ctx.lineWidth = 1
+  ctx.beginPath(); ctx.moveTo(0, BAR_Y); ctx.lineTo(W, BAR_Y); ctx.stroke()
+
+  // Panel layout: 4 panels × 14% + center flex
+  const PANEL_W = W * 0.14
+  const panels = [
+    { x: 0,                                right: false },
+    { x: PANEL_W,                          right: false },
+    { x: PANEL_W * 4,                      right: false },  // far right
+    { x: PANEL_W * 3,                      right: false },  // right of center
+  ]
+
+  const spd   = point?.speedSmooth ?? 0
+  const dist  = (point?.cumDist ?? 0) / 1000
+  const ele   = Math.round(point?.ele ?? 0)
+  const grade = point?.grade ?? 0
+  const hr    = point?.hr
+  const cad   = point?.cadence
+  const pwr   = point?.power
+  const paceStr = spd > 0.5 ? (() => { const pm = 60 / spd; const mm = Math.floor(pm); return `${mm}:${String(Math.round((pm-mm)*60)).padStart(2,'0')}` })() : '--'
+  const hrStr = hr  != null ? String(Math.round(hr))  : '--'
+  const cadStr = cad != null ? String(Math.round(cad)) : '--'
+  const pwrStr = pwr != null ? String(Math.round(pwr)) : '--'
+
+  const PANPAD = Math.round(Math.max(6, W * 0.008))
+  const MID_Y  = BAR_Y + BAR_H / 2
+  const DIV_Y  = MID_Y
+
+  function drawPanelStat(lbl, val, unit, cx, cy, big, showUnit = true) {
+    const lblSz = 8, valSzB = 41, valSzN = 26
+    const valSz = big ? valSzB : valSzN
+    text(lbl,  cx, cy - Math.round(valSz * s * 0.6) - Math.round(10 * s), lblSz, 700, DIM, 'center', 'bottom')
+    text(val,  cx, cy - Math.round(valSz * s * 0.5), valSz, big ? 800 : 700, big ? hexToRgba(overlayColor, val === '--' ? 0.35 : 1) : ACCENT, 'center', 'middle')
+    if (showUnit && unit) text(unit, cx, cy + Math.round(valSz * s * 0.55), 9, 600, DIM, 'center', 'top')
+  }
+
+  // Panel vertical dividers
+  ctx.strokeStyle = 'rgba(255,255,255,0.07)'; ctx.lineWidth = 1
+  for (const x of [PANEL_W, PANEL_W * 2, W - PANEL_W * 2, W - PANEL_W]) {
+    ctx.beginPath(); ctx.moveTo(x, BAR_Y); ctx.lineTo(x, H - PROG_H); ctx.stroke()
+  }
+  // Horizontal dividers inside each side panel
+  ctx.strokeStyle = 'rgba(255,255,255,0.07)'
+  for (const x of [PANEL_W / 2, PANEL_W * 1.5, W - PANEL_W * 1.5, W - PANEL_W / 2]) {
+    ctx.beginPath(); ctx.moveTo(x - PANEL_W * 0.38, DIV_Y); ctx.lineTo(x + PANEL_W * 0.38, DIV_Y); ctx.stroke()
+  }
+
+  // Panel 0 (left): HEART RATE (big) + SPEED
+  const p0cx = PANEL_W / 2
+  drawPanelStat('HEART RATE', hrStr, 'bpm', p0cx, BAR_Y + BAR_H * 0.28, true)
+  drawPanelStat('SPEED', spd.toFixed(0), 'km/h', p0cx, BAR_Y + BAR_H * 0.75, false)
+
+  // Panel 1: CADENCE + POWER
+  const p1cx = PANEL_W * 1.5
+  drawPanelStat('CADENCE', cadStr, 'rpm', p1cx, BAR_Y + BAR_H * 0.28, false)
+  drawPanelStat('POWER', pwrStr, 'w',   p1cx, BAR_Y + BAR_H * 0.75, false)
+
+  // Center: elevation sparkline
+  const CX = PANEL_W * 2, CW = W - PANEL_W * 4
+  if (pts.length > 1) {
+    const eles = pts.map(p => p.ele ?? 0)
+    const eMin = Math.min(...eles), eMax = Math.max(...eles)
+    const eRange = eMax - eMin || 1
+    const CY2 = H - PROG_H, chartH = BAR_H * 0.72
+    const cTopY = BAR_Y + BAR_H * 0.14
+
+    ctx.beginPath()
+    pts.forEach((p, i) => {
+      const px = CX + (i / (pts.length - 1)) * CW
+      const py = cTopY + chartH * (1 - ((p.ele ?? 0) - eMin) / eRange)
+      i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py)
+    })
+    ctx.strokeStyle = hexToRgba(overlayColor, 0.35); ctx.lineWidth = Math.max(1, Math.round(1.5 * s))
+    ctx.lineCap = 'round'; ctx.stroke()
+
+    // Filled area under line up to current position
+    const curPx = CX + animIdx / (pts.length - 1) * CW
+    ctx.beginPath()
+    for (let i = 0; i <= animIdx && i < pts.length; i++) {
+      const px = CX + (i / (pts.length - 1)) * CW
+      const py = cTopY + chartH * (1 - ((pts[i].ele ?? 0) - eMin) / eRange)
+      i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py)
+    }
+    ctx.lineTo(curPx, cTopY + chartH); ctx.lineTo(CX, cTopY + chartH); ctx.closePath()
+    ctx.fillStyle = hexToRgba(overlayColor, 0.08); ctx.fill()
+
+    // Current position marker
+    const curPy = cTopY + chartH * (1 - ((pts[animIdx]?.ele ?? 0) - eMin) / eRange)
+    ctx.beginPath(); ctx.arc(curPx, curPy, Math.max(2.5, 3 * s), 0, Math.PI * 2)
+    ctx.fillStyle = ACCENT; ctx.fill()
+  }
+
+  // Panel 2 (right of center): ELEVATION + GRADE
+  const p2cx = W - PANEL_W * 1.5
+  drawPanelStat('ELEVATION', String(ele), 'm',   p2cx, BAR_Y + BAR_H * 0.28, false)
+  drawPanelStat('GRADE',     `${grade.toFixed(1)}%`, '', p2cx, BAR_Y + BAR_H * 0.75, false, false)
+
+  // Panel 3 (far right): DISTANCE (big) + PACE
+  const p3cx = W - PANEL_W / 2
+  drawPanelStat('DISTANCE', dist.toFixed(1), 'km', p3cx, BAR_Y + BAR_H * 0.28, true)
+  drawPanelStat('PACE', paceStr, '/km',            p3cx, BAR_Y + BAR_H * 0.75, false)
+
+  // Progress row
+  ctx.fillStyle = 'rgba(0,0,0,0.88)'
+  ctx.fillRect(0, H - PROG_H, W, PROG_H)
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)'; ctx.lineWidth = 1
+  ctx.beginPath(); ctx.moveTo(0, H - PROG_H); ctx.lineTo(W, H - PROG_H); ctx.stroke()
+
+  const fillW = W * Math.min(1, progress)
+  ctx.fillStyle = ACCENT; ctx.fillRect(0, H - PROG_H, fillW, Math.round(3 * s))
+
   ctx.restore()
 }
 

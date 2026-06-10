@@ -8,4 +8,10 @@ export default defineConfig({
   optimizeDeps: {
     exclude: ['@xenova/transformers'],
   },
+  worker: {
+    format: 'es',
+    rollupOptions: {
+      external: (id) => id.startsWith('https://'),
+    },
+  },
 })

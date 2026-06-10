@@ -1,5 +1,5 @@
 <template>
-  <div class="stage" :class="{ 'has-video': !!videoSrc }" ref="stageRef" :style="stageStyle">
+  <div class="stage" :class="{ 'has-video': !!videoSrc, 'is-portrait': isPortrait }" ref="stageRef" :style="stageStyle">
     <video
       v-if="videoSrc"
       ref="videoRef"
@@ -26,7 +26,15 @@
     />
 
     <!-- Map canvas: full stage in map-only mode, small inset top-right over video -->
-    <canvas ref="canvasRef" :class="{ inset: !!videoSrc }" />
+    <canvas
+      ref="canvasRef"
+      v-show="!(videoSrc && (overlayFormat === 'sticker1' || overlayFormat === 'dashboard'))"
+      :class="{
+        inset:     !!videoSrc && !['sticker2','sticker1','dashboard','magene'].includes(overlayFormat),
+        's2-map':  !!videoSrc && overlayFormat === 'sticker2',
+        'mag-map': !!videoSrc && overlayFormat === 'magene',
+      }"
+    />
 
     <!-- ── Video HUD overlay root (scales up in portrait mode) ───────────── -->
     <div class="hud-overlay-root" v-if="videoSrc && points.length">
@@ -38,7 +46,7 @@
 
       <!-- Lap times box (top-left) -->
       <div class="hud-laps" v-if="totalLaps > 0">
-        <div class="lap-header">1 mile lap {{ currentLapN }}/{{ totalLaps }}</div>
+        <div class="lap-header">1 km lap {{ currentLapN }}/{{ totalLaps }}</div>
         <div
           v-for="lap in displayLaps"
           :key="lap.n"
@@ -414,8 +422,304 @@
     </template>
 
 
+    <!-- ── Tactical HUD (video mode) ───────────────────────────────────── -->
+    <template v-if="overlayFormat === 'tac'">
+      <div class="tac-root">
+        <!-- Corner brackets -->
+        <span class="tac-corner tac-tl" />
+        <span class="tac-corner tac-tr" />
+        <span class="tac-corner tac-bl" />
+        <span class="tac-corner tac-br" />
+
+        <!-- Left panel: speed hero + mini stats + distance -->
+        <div class="tac-left">
+          <div class="tac-lbl">SPEED</div>
+          <div class="tac-big">{{ speedKmhGauge }}</div>
+          <div class="tac-unit">KM/H</div>
+          <div class="tac-sep" />
+          <div class="tac-mini-row">
+            <span class="tac-mini-lbl">GRADE</span>
+            <span class="tac-mini-val">{{ gradeDisplay }}</span>
+          </div>
+          <div class="tac-mini-row">
+            <span class="tac-mini-lbl">PACE</span>
+            <span class="tac-mini-val">{{ paceDisplay }}</span>
+          </div>
+          <div class="tac-sep" />
+          <div class="tac-lbl">DISTANCE</div>
+          <div class="tac-big tac-big--md">{{ distKmHud }}</div>
+          <div class="tac-unit">KM</div>
+        </div>
+
+        <!-- Left vertical divider -->
+        <div class="tac-vline tac-vline--l" />
+
+        <!-- Right panel: stacked metrics -->
+        <div class="tac-right">
+          <div class="tac-rstat">
+            <div class="tac-rlbl">ELEVATION</div>
+            <div class="tac-rval">{{ currentElevM }}<span class="tac-runit"> M</span></div>
+          </div>
+          <div class="tac-rsep" />
+          <div class="tac-rstat">
+            <div class="tac-rlbl">REMAIN</div>
+            <div class="tac-rval">{{ remainKm }}<span class="tac-runit"> KM</span></div>
+          </div>
+          <div class="tac-rsep" />
+          <div class="tac-rstat">
+            <div class="tac-rlbl">{{ hrDisplay !== '--' ? 'HEART RATE' : 'ELEV GAIN' }}</div>
+            <div class="tac-rval">{{ hrDisplay !== '--' ? hrDisplay : elevGainMNow }}<span class="tac-runit"> {{ hrDisplay !== '--' ? 'BPM' : 'M' }}</span></div>
+          </div>
+          <div class="tac-rsep" />
+          <div class="tac-rstat">
+            <div class="tac-rlbl">{{ cadDisplay !== '--' ? 'CADENCE' : 'GRADE' }}</div>
+            <div class="tac-rval">{{ cadDisplay !== '--' ? cadDisplay : gradeRaw }}<span class="tac-runit"> {{ cadDisplay !== '--' ? 'RPM' : '%' }}</span></div>
+          </div>
+        </div>
+
+        <!-- Right vertical divider -->
+        <div class="tac-vline tac-vline--r" />
+
+        <!-- Bottom strip: progress bar + time/distance labels -->
+        <div class="tac-bottom">
+          <div class="tac-prog-wrap">
+            <div class="tac-prog-fill" :style="{ width: barPct + '%' }" />
+          </div>
+          <div class="tac-brow">
+            <span class="tac-bval">{{ timeCur }}</span>
+            <span class="tac-bval">{{ totalDistKm }} KM</span>
+            <span class="tac-bval">{{ timeTotal }}</span>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- ── Sticker 1: Finisher card (right panel) ───────────────────────── -->
+    <template v-if="overlayFormat === 'sticker1'">
+      <div class="s1-panel">
+        <div class="s1-inner">
+          <div class="s1-title" v-if="locationName">{{ locationName.split(',')[0].trim().toUpperCase() }}</div>
+          <div class="s1-badge">
+            <div class="s1-badge-num">{{ totalDistKm }}</div>
+            <div class="s1-badge-side">
+              <div class="s1-badge-km">KM</div>
+              <div class="s1-badge-fin">FINISHER</div>
+            </div>
+          </div>
+          <div class="s1-sep" />
+          <div class="s1-stats">
+            <div class="s1-row">
+              <svg class="s1-ico" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2 9 8h6L12 2zm0 20 3-6H9l3 6zM2 12l6-3v6L2 12zm20 0-6 3V9l6 3z"/></svg>
+              <div class="s1-stat"><div class="s1-lbl">ELEV GAIN</div><div class="s1-val">{{ s1ElevGain }}<span class="s1-unit"> m</span></div></div>
+            </div>
+            <div class="s1-row">
+              <svg class="s1-ico" viewBox="0 0 24 24"><path fill="currentColor" d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z"/></svg>
+              <div class="s1-stat"><div class="s1-lbl">TIME</div><div class="s1-val">{{ s1TotalTime }}</div></div>
+            </div>
+            <div class="s1-row">
+              <svg class="s1-ico" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+              <div class="s1-stat"><div class="s1-lbl">DISTANCE</div><div class="s1-val">{{ totalDistKm }}<span class="s1-unit"> km</span></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- ── Sticker 2: Route card (full-map + badges) ──────────────────── -->
+    <template v-if="overlayFormat === 'sticker2'">
+      <div class="s2-start">
+        <div class="s2-dot s2-dot-start" />
+        <div><div class="s2-ptag">START</div><div class="s2-coord">{{ s2StartCoord }}</div></div>
+      </div>
+      <div class="s2-end">
+        <div class="s2-dot s2-dot-end" />
+        <div><div class="s2-ptag">END</div><div class="s2-coord">{{ s2EndCoord }}</div></div>
+      </div>
+      <div class="s2-statsbox">
+        <div class="s2-srow"><span class="s2-slbl">DISTANCE</span><span class="s2-sval">{{ totalDistKm }} km</span></div>
+        <div class="s2-srow"><span class="s2-slbl">TIME</span><span class="s2-sval">{{ s1TotalTime }}</span></div>
+        <div class="s2-srow"><span class="s2-slbl">ELEV GAIN</span><span class="s2-sval">{{ s1ElevGain }} m</span></div>
+      </div>
+      <div class="s2-route-title" v-if="locationName">{{ locationName.toUpperCase() }}</div>
+    </template>
+
+    <!-- ── Dashboard HUD (video mode) ──────────────────────────────────── -->
+    <template v-if="overlayFormat === 'dashboard'">
+
+      <!-- Main bar -->
+      <div class="dash-bar">
+
+        <!-- Left: HR + Speed -->
+        <div class="dash-panel dash-panel--left">
+          <div class="dash-stat">
+            <div class="dash-lbl">HEART RATE</div>
+            <div class="dash-val-big" :style="{ color: hrDisplay !== '--' ? overlayColor : 'rgba(255,255,255,0.35)' }">{{ hrDisplay }}</div>
+            <div class="dash-unit">bpm</div>
+          </div>
+          <div class="dash-divider-h" />
+          <div class="dash-stat">
+            <div class="dash-lbl">SPEED</div>
+            <div class="dash-val" :style="{ color: overlayColor }">{{ speedKmhGauge }}</div>
+            <div class="dash-unit">km/h</div>
+          </div>
+        </div>
+
+        <!-- Center-left: Cadence + Power -->
+        <div class="dash-panel">
+          <div class="dash-stat">
+            <div class="dash-lbl">CADENCE</div>
+            <div class="dash-val" :style="{ color: overlayColor }">{{ cadDisplay }}</div>
+            <div class="dash-unit">rpm</div>
+          </div>
+          <div class="dash-divider-h" />
+          <div class="dash-stat">
+            <div class="dash-lbl">POWER</div>
+            <div class="dash-val" :style="{ color: overlayColor }">{{ powerDisplay }}</div>
+          </div>
+        </div>
+
+        <!-- Center: Elevation chart -->
+        <div class="dash-center">
+          <canvas class="dash-elev-canvas" ref="elevChartRef" />
+        </div>
+
+        <!-- Right: Elevation + Grade -->
+        <div class="dash-panel">
+          <div class="dash-stat">
+            <div class="dash-lbl">ELEVATION</div>
+            <div class="dash-val" :style="{ color: overlayColor }">{{ currentElevM }}</div>
+            <div class="dash-unit">m</div>
+          </div>
+          <div class="dash-divider-h" />
+          <div class="dash-stat">
+            <div class="dash-lbl">GRADE</div>
+            <div class="dash-val" :style="{ color: overlayColor }">{{ gradeDisplay }}</div>
+          </div>
+        </div>
+
+        <!-- Far right: Distance + Pace -->
+        <div class="dash-panel dash-panel--right">
+          <div class="dash-stat">
+            <div class="dash-lbl">DISTANCE</div>
+            <div class="dash-val-big" :style="{ color: overlayColor }">{{ distKmHud }}</div>
+            <div class="dash-unit">km</div>
+          </div>
+          <div class="dash-divider-h" />
+          <div class="dash-stat">
+            <div class="dash-lbl">PACE</div>
+            <div class="dash-val" :style="{ color: overlayColor }">{{ paceDisplay }}</div>
+            <div class="dash-unit">/km</div>
+          </div>
+        </div>
+
+      </div><!-- /dash-bar -->
+
+      <!-- Progress + distance ticks -->
+      <div class="dash-progress-row">
+        <div class="dash-progress-fill" :style="{ width: barPct + '%', background: overlayColor }" />
+        <div class="dash-dist-labels">
+          <span v-for="(t, i) in dashTicks" :key="i" class="dash-tick" :style="{ left: t.pct + '%' }">{{ t.label }}</span>
+        </div>
+      </div>
+
+    </template>
+
+    <!-- ── Magene HUD (video mode) ────────────────────────────────────── -->
+    <template v-if="overlayFormat === 'magene'">
+
+      <!-- Top-left: branding + timestamp -->
+      <div class="mag-brand-block">
+        <div class="mag-brand-text">OSMO 360 × Magene</div>
+        <div v-if="goproDateTime" class="mag-ts">{{ goproDateTime.date.toUpperCase().replace(',','') }}&nbsp;{{ goproDateTime.time }}</div>
+      </div>
+
+      <!-- Top-right: G-force widget -->
+      <div class="mag-gforce-box">
+        <svg viewBox="0 0 60 60" class="mag-gf-svg">
+          <rect x="1" y="1" width="58" height="58" rx="3" fill="rgba(0,0,0,0.55)" stroke="rgba(255,255,255,0.3)" stroke-width="1"/>
+          <line x1="1" y1="30" x2="59" y2="30" stroke="rgba(255,255,255,0.2)" stroke-width="0.5"/>
+          <line x1="30" y1="1" x2="30" y2="59" stroke="rgba(255,255,255,0.2)" stroke-width="0.5"/>
+          <line x1="1" y1="15" x2="59" y2="15" stroke="rgba(255,255,255,0.1)" stroke-width="0.5"/>
+          <line x1="1" y1="45" x2="59" y2="45" stroke="rgba(255,255,255,0.1)" stroke-width="0.5"/>
+          <line x1="15" y1="1" x2="15" y2="59" stroke="rgba(255,255,255,0.1)" stroke-width="0.5"/>
+          <line x1="45" y1="1" x2="45" y2="59" stroke="rgba(255,255,255,0.1)" stroke-width="0.5"/>
+          <circle :cx="mageneGfDot.x" :cy="mageneGfDot.y" r="7" :fill="overlayColor"/>
+        </svg>
+        <div class="mag-gf-val">{{ gForceProxy }}G</div>
+      </div>
+
+      <!-- Left stats: Elevation, Gradient, Total Distance -->
+      <div class="mag-left-stats">
+        <div class="mag-stat">
+          <div class="mag-stat-lbl">Elevation</div>
+          <div class="mag-stat-val">{{ currentElevM }}<span class="mag-stat-unit"> M</span></div>
+        </div>
+        <div class="mag-stat">
+          <div class="mag-stat-lbl">Gradient</div>
+          <div class="mag-stat-val">{{ Math.round(parseFloat(gradeRaw)) }}<span class="mag-stat-unit"> %</span></div>
+        </div>
+        <div class="mag-stat">
+          <div class="mag-stat-lbl">Total Distance</div>
+          <div class="mag-stat-val">{{ distKmHud }}<span class="mag-stat-unit"> KM</span></div>
+        </div>
+      </div>
+
+      <!-- Right stats: Cadence, Heart Rate -->
+      <div class="mag-right-stats">
+        <div class="mag-stat mag-stat--r">
+          <div class="mag-stat-lbl">Cadence</div>
+          <div class="mag-stat-val">{{ cadDisplay === '--' ? 0 : cadDisplay }}<span class="mag-stat-unit"> RPM</span></div>
+        </div>
+        <div class="mag-stat mag-stat--r">
+          <div class="mag-stat-lbl">Heart Rate</div>
+          <div class="mag-stat-val">{{ hrDisplay }}<span class="mag-stat-unit"> BPM</span></div>
+        </div>
+      </div>
+
+      <!-- Bottom-center: heading arc -->
+      <div class="mag-heading-wrap">
+        <svg viewBox="0 0 120 52" class="mag-heading-svg">
+          <path d="M 8 48 A 52 52 0 0 1 112 48" fill="none" stroke="rgba(255,255,255,0.22)" stroke-width="2" stroke-linecap="round"/>
+          <line x1="60" y1="4" x2="60" y2="18" stroke="rgba(255,255,255,0.55)" stroke-width="1.5" stroke-linecap="round"/>
+          <text x="60" y="42" fill="white" font-size="16" font-weight="700" text-anchor="middle" font-family="sans-serif" font-variant-numeric="tabular-nums">{{ bearingDeg }}°</text>
+        </svg>
+      </div>
+
+      <!-- Bottom-right: colored arc speed gauge + needle -->
+      <div class="mag-speed-wrap">
+        <svg viewBox="0 0 180 130" class="mag-speed-svg">
+          <!-- Dark face disc -->
+          <circle cx="90" cy="100" r="64" fill="rgba(0,0,0,0.55)"/>
+          <!-- Color segments: r=70, C=439.82, 270° arc=329.87, each quarter≈82.47 -->
+          <circle cx="90" cy="100" r="70" fill="none" stroke="#22c55e" stroke-width="12"
+            stroke-dasharray="82.47 357.35" stroke-dashoffset="0"
+            stroke-linecap="butt" transform="rotate(-135 90 100)"/>
+          <circle cx="90" cy="100" r="70" fill="none" stroke="#eab308" stroke-width="12"
+            stroke-dasharray="82.47 357.35" stroke-dashoffset="-82.47"
+            stroke-linecap="butt" transform="rotate(-135 90 100)"/>
+          <circle cx="90" cy="100" r="70" fill="none" stroke="#f97316" stroke-width="12"
+            stroke-dasharray="82.47 357.35" stroke-dashoffset="-164.94"
+            stroke-linecap="butt" transform="rotate(-135 90 100)"/>
+          <circle cx="90" cy="100" r="70" fill="none" stroke="#ef4444" stroke-width="12"
+            stroke-dasharray="82.47 357.35" stroke-dashoffset="-247.41"
+            stroke-linecap="butt" transform="rotate(-135 90 100)"/>
+          <!-- Needle: small white triangle rotating to current speed -->
+          <g :transform="`rotate(${mageneNeedleAngle}, 90, 100)`">
+            <polygon points="90,24 86,38 94,38" fill="white" opacity="0.92"/>
+          </g>
+          <!-- Speed number -->
+          <text x="90" y="105" fill="white" font-size="44" font-weight="700"
+            text-anchor="middle" font-family="sans-serif" font-variant-numeric="tabular-nums">{{ speedKmhGauge }}</text>
+          <!-- KM/H label -->
+          <text x="90" y="122" fill="rgba(255,255,255,0.6)" font-size="10" font-weight="700"
+            text-anchor="middle" font-family="sans-serif" letter-spacing="2">KM/H</text>
+        </svg>
+      </div>
+
+    </template>
+
     <!-- ── Location name ────────────────────────────────────────────────── -->
-    <div v-if="locationName" class="hud-location" :style="locationStyle">
+    <div v-if="locationName && overlayFormat !== 'magene'" class="hud-location" :style="locationStyle">
       <svg viewBox="0 0 12 16" fill="currentColor" class="hud-location-pin"><path d="M6 0a5 5 0 0 1 5 5c0 4-5 11-5 11S1 9 1 5a5 5 0 0 1 5-5zm0 3a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>
       <span class="hud-location-lines">
         <span v-for="(part, i) in locationParts" :key="i">{{ part.trim() }}</span>
@@ -462,6 +766,7 @@
       class="caption-overlay"
       :class="[
         `caption--${captionStyle.fontSize}`,
+        `caption--font-${captionStyle.fontFamily ?? 'sans'}`,
         { 'caption--bg': captionStyle.background },
         { 'caption--bottom': capY === null && captionStyle.position === 'bottom' },
         { 'caption--top':    capY === null && captionStyle.position === 'top' },
@@ -507,7 +812,7 @@ const props = defineProps({
   playerAspect:  { type: String,  default: '16:9' },
   locationName:     { type: String,  default: '' },
   captionSegments:  { type: Array,   default: () => [] },
-  captionStyle:     { type: Object,  default: () => ({ position: 'bottom', fontSize: 'medium', background: true }) },
+  captionStyle:     { type: Object,  default: () => ({ position: 'bottom', fontSize: 'medium', background: true, fontFamily: 'sans', color: '#ffffff', bold: true, allCaps: false, outline: false }) },
 })
 
 const emit = defineEmits(['timeupdate', 'ended', 'loadedmetadata', 'update:captionStyle'])
@@ -526,15 +831,38 @@ const currentCaption = computed(() => {
 // ── Caption drag / resize ─────────────────────────────────────────────────────
 const capX        = ref(props.captionStyle.capX ?? 50)   // center-x %
 const capY        = ref(props.captionStyle.capY ?? null) // top-y % (null = use CSS class)
-const capW        = ref(props.captionStyle.capW ?? 80)   // width %
+const capW        = ref(props.captionStyle.capW ?? 60)   // width %
 const capDragging = ref(false)
 const capResizing = ref(false)
 
-// Reset to class-based position when the top/bottom button is clicked
+// Map placement id → capX/capY percentages
+const PLACEMENT_MAP = {
+  'top-left':    { x: 20, y: 8  }, 'top-center':  { x: 50, y: 8  }, 'top-right':   { x: 80, y: 8  },
+  'mid-left':    { x: 20, y: 44 }, 'mid-center':  { x: 50, y: 44 }, 'mid-right':   { x: 80, y: 44 },
+  'bot-left':    { x: 20, y: 82 }, 'bot-center':  { x: 50, y: 82 }, 'bot-right':   { x: 80, y: 82 },
+}
+watch(() => props.captionStyle.placement, (p) => {
+  const pos = PLACEMENT_MAP[p]
+  if (pos) { capX.value = pos.x; capY.value = pos.y }
+}, { immediate: true })
+// Legacy: reset when old position prop changes
 watch(() => props.captionStyle.position, () => { capY.value = null; capX.value = 50 })
 
 const capOverlayStyle = computed(() => {
-  const base = { width: capW.value + '%', maxWidth: 'none' }
+  const cs = props.captionStyle
+  const fontSizePx = typeof cs.fontSize === 'number' ? cs.fontSize : ({ small: 12, medium: 15, large: 20 }[cs.fontSize] ?? 15)
+  const bgOpacity = (cs.bgOpacity ?? 55) / 100
+  const base = {
+    width: capW.value + '%', maxWidth: 'none',
+    fontSize: fontSizePx + 'px',
+    color: cs.color ?? '#ffffff',
+    fontWeight: cs.bold !== false ? 'bold' : 'normal',
+    textTransform: cs.allCaps ? 'uppercase' : cs.lowercase ? 'lowercase' : 'none',
+    textShadow: cs.outline
+      ? '-2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000'
+      : 'none',
+    '--cap-bg-opacity': bgOpacity,
+  }
   if (capY.value !== null) {
     return { ...base, left: capX.value + '%', top: capY.value + '%', bottom: 'auto', transform: 'translateX(-50%)' }
   }
@@ -569,7 +897,8 @@ function endCapDrag() {
   capDragging.value = false; capDragDs = null
   window.removeEventListener('mousemove', onCapDragMove)
   window.removeEventListener('mouseup',   endCapDrag)
-  emit('update:captionStyle', { ...props.captionStyle, capX: capX.value, capY: capY.value, capW: capW.value })
+  const stageW = stageRef.value?.getBoundingClientRect().width ?? 600
+  emit('update:captionStyle', { ...props.captionStyle, capX: capX.value, capY: capY.value, capW: capW.value, stageW })
 }
 
 let capResizeDs = null
@@ -594,7 +923,8 @@ function endCapResize() {
   capResizing.value = false; capResizeDs = null
   window.removeEventListener('mousemove', onCapResizeMove)
   window.removeEventListener('mouseup',   endCapResize)
-  emit('update:captionStyle', { ...props.captionStyle, capX: capX.value, capY: capY.value, capW: capW.value })
+  const stageW = stageRef.value?.getBoundingClientRect().width ?? 600
+  emit('update:captionStyle', { ...props.captionStyle, capX: capX.value, capY: capY.value, capW: capW.value, stageW })
 }
 
 // ── Accent-color helpers ──────────────────────────────────────────────────────
@@ -617,6 +947,12 @@ const hudScale = computed(() => {
   const baseline = Math.sqrt(9 / 16)   // 16:9 reference
   const current  = Math.sqrt(h / w)
   return Math.max(1, current / baseline)
+})
+
+const isPortrait = computed(() => {
+  if (videoNativeW.value && videoNativeH.value) return videoNativeH.value > videoNativeW.value
+  const [w, h] = props.playerAspect.split(':').map(Number)
+  return !!(w && h && h > w)
 })
 
 const stageStyle = computed(() => {
@@ -714,18 +1050,56 @@ defineExpose({
 })
 
 // ── Fullscreen ────────────────────────────────────────────────────────────────
+// We reparent the stage into a plain DOM container and fullscreen that container.
+// This sidesteps the browser UA stylesheet forcing the fullscreen element to
+// width:100%/height:100%, which breaks portrait aspect ratios.
 const isFullscreen = ref(false)
+let _fsContainer = null
+let _fsOrigParent = null
+let _fsOrigNextSibling = null
 
 function toggleFullscreen() {
   if (!document.fullscreenElement) {
-    stageRef.value?.requestFullscreen()
+    const stage = stageRef.value
+    if (!stage) return
+
+    // Build a flex container that centres the stage on a black backdrop
+    _fsContainer = document.createElement('div')
+    _fsContainer.style.cssText =
+      'position:fixed;inset:0;background:#000;display:flex;' +
+      'align-items:center;justify-content:center;z-index:2147483647'
+
+    // Apply fullscreen-specific overrides directly on the stage
+    stage.dataset.fsActive = '1'
+
+    _fsOrigParent = stage.parentNode
+    _fsOrigNextSibling = stage.nextSibling
+    document.body.appendChild(_fsContainer)
+    _fsContainer.appendChild(stage)
+    _fsContainer.requestFullscreen().catch(() => _restoreStage())
   } else {
     document.exitFullscreen()
   }
 }
 
+function _restoreStage() {
+  const stage = stageRef.value
+  if (!stage) return
+  delete stage.dataset.fsActive
+  if (_fsOrigNextSibling) {
+    _fsOrigParent?.insertBefore(stage, _fsOrigNextSibling)
+  } else {
+    _fsOrigParent?.appendChild(stage)
+  }
+  _fsContainer?.remove()
+  _fsContainer = null
+  _fsOrigParent = null
+  _fsOrigNextSibling = null
+}
+
 function onFullscreenChange() {
   isFullscreen.value = !!document.fullscreenElement
+  if (!document.fullscreenElement) _restoreStage()
 }
 
 function onKeyDown(e) {
@@ -883,6 +1257,60 @@ const gradeRaw = computed(() => {
   return g.toFixed(2)
 })
 
+// ── Magene HUD computeds ──────────────────────────────────────────────────────
+const gForceProxy = computed(() => (Math.abs(current.value?.grade ?? 0) / 15).toFixed(1))
+const mageneGfDot = computed(() => {
+  const g = current.value?.grade ?? 0
+  return { x: 30, y: Math.max(12, Math.min(48, 30 - g * 1.5)) }
+})
+const mageneNeedleAngle = computed(() => {
+  const p = Math.max(0, Math.min(1, (parseFloat(speedKmhGauge.value) || 0) / 50))
+  return -135 + p * 270
+})
+
+const remainKm = computed(() => {
+  const total = parseFloat(totalDistKm.value) || 0
+  const done  = parseFloat(distKmHud.value) || 0
+  return Math.max(0, total - done).toFixed(1)
+})
+
+// Dashboard: evenly-spaced distance tick marks along the progress bar
+const dashTicks = computed(() => {
+  const total = parseFloat(totalDistKm.value) || 0
+  if (total <= 0) return []
+  // Pick a nice step so we get ~5-8 labels
+  const steps = [0.5, 1, 2, 5, 10, 20, 50]
+  const targetCount = 6
+  const step = steps.find(s => total / s <= targetCount) ?? Math.ceil(total / targetCount)
+  const ticks = []
+  for (let d = step; d < total; d += step) {
+    ticks.push({ pct: (d / total) * 100, label: d >= 1 ? `${d.toFixed(0)}km` : `${(d * 1000).toFixed(0)}m` })
+  }
+  return ticks
+})
+
+// ── Sticker overlay computeds ─────────────────────────────────────────────────
+const s1ElevGain = computed(() => {
+  if (!props.points.length) return '0'
+  return Math.round(props.points[props.points.length - 1].cumElevGain ?? 0).toLocaleString()
+})
+const s1TotalTime = computed(() => {
+  const pts = props.points
+  const t0 = pts[0]?.time, tN = pts[pts.length - 1]?.time
+  const ms = (t0 && tN) ? tN - t0 : props.totalTime
+  if (!ms || ms <= 0) return '--'
+  const h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000)
+  return h > 0 ? `${h}h ${String(m).padStart(2,'0')}m` : `${m}m`
+})
+const s2StartCoord = computed(() => {
+  const p = props.points[0]; if (!p) return '--'
+  return `${Math.abs(p.lat).toFixed(3)}°${p.lat >= 0 ? 'N':'S'}  ${Math.abs(p.lon).toFixed(3)}°${p.lon >= 0 ? 'E':'W'}`
+})
+const s2EndCoord = computed(() => {
+  const p = props.points[props.points.length - 1]; if (!p) return '--'
+  return `${Math.abs(p.lat).toFixed(3)}°${p.lat >= 0 ? 'N':'S'}  ${Math.abs(p.lon).toFixed(3)}°${p.lon >= 0 ? 'E':'W'}`
+})
+
 // ── Arc gauge dash (270° sweep, r=38, circ≈238.76) ──────────────────────────
 const CIRC = 226.195, ARC = 169.646
 function arcDash(val, maxVal) {
@@ -1028,6 +1456,104 @@ function draw() {
   ctx.clearRect(0, 0, W, H)
 
   if (props.videoSrc) {
+    if (props.overlayFormat === 'sticker2') {
+      // ── Full route overview (sticker2) ────────────────────────────────────
+      if (!toXY) return
+      ctx.fillStyle = 'rgba(0,8,20,0.85)'
+      ctx.fillRect(0, 0, W, H)
+
+      // Glow pass
+      const { r: or, g: og, b: ob } = parseOc(props.overlayColor)
+      ctx.beginPath()
+      pts.forEach((p, i) => { const [x, y] = toXY(p.lat, p.lon); i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y) })
+      ctx.shadowColor = `rgb(${or},${og},${ob})`; ctx.shadowBlur = 10
+      ctx.strokeStyle = `rgba(${or},${og},${ob},0.25)`; ctx.lineWidth = 6; ctx.stroke()
+      ctx.shadowBlur = 0
+
+      // Full faint trail
+      ctx.beginPath()
+      pts.forEach((p, i) => { const [x, y] = toXY(p.lat, p.lon); i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y) })
+      ctx.strokeStyle = 'rgba(255,255,255,0.14)'; ctx.lineWidth = 1.5; ctx.stroke()
+
+      // Speed-colored traveled portion
+      for (let i = Math.max(1, props.trimStart); i <= idx && i < pts.length; i++) {
+        const t = pts[i].speedSmooth / maxSpeed
+        const r = Math.round(lerp(30,255,t)), g = Math.round(lerp(100,80,t)), b = Math.round(lerp(255,30,t))
+        const [x0,y0] = toXY(pts[i-1].lat, pts[i-1].lon)
+        const [x1,y1] = toXY(pts[i].lat,   pts[i].lon)
+        ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1)
+        ctx.strokeStyle = `rgb(${r},${g},${b})`; ctx.lineWidth = 2.5; ctx.stroke()
+      }
+
+      // Start marker (green)
+      const [sx,sy] = toXY(pts[0].lat, pts[0].lon)
+      ctx.beginPath(); ctx.arc(sx, sy, 6, 0, Math.PI*2)
+      ctx.fillStyle = '#00e676'; ctx.shadowColor = '#00e676'; ctx.shadowBlur = 8; ctx.fill(); ctx.shadowBlur = 0
+      ctx.beginPath(); ctx.arc(sx, sy, 10, 0, Math.PI*2)
+      ctx.strokeStyle = 'rgba(0,230,118,0.35)'; ctx.lineWidth = 1.5; ctx.stroke()
+
+      // End marker (red)
+      const ep2 = pts[pts.length - 1], [ex,ey] = toXY(ep2.lat, ep2.lon)
+      ctx.beginPath(); ctx.arc(ex, ey, 6, 0, Math.PI*2)
+      ctx.fillStyle = '#ff5252'; ctx.shadowColor = '#ff5252'; ctx.shadowBlur = 8; ctx.fill(); ctx.shadowBlur = 0
+      ctx.beginPath(); ctx.arc(ex, ey, 10, 0, Math.PI*2)
+      ctx.strokeStyle = 'rgba(255,82,82,0.35)'; ctx.lineWidth = 1.5; ctx.stroke()
+
+      // Current position
+      if (idx < pts.length) {
+        const [cx,cy] = toXY(pts[idx].lat, pts[idx].lon)
+        ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI*2); ctx.fillStyle = '#fff'; ctx.fill()
+        ctx.beginPath(); ctx.arc(cx, cy, 8.5, 0, Math.PI*2)
+        ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 1.5; ctx.stroke()
+      }
+      return
+    }
+
+    // ── Magene: full route overview in the bottom-left inset ─────────────────
+    if (props.overlayFormat === 'magene') {
+      if (!toXY) return
+      ctx.fillStyle = 'rgba(0,0,0,0.52)'
+      ctx.fillRect(0, 0, W, H)
+
+      // Full faint route outline
+      ctx.beginPath()
+      pts.forEach((p, i) => { const [x, y] = toXY(p.lat, p.lon); i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y) })
+      ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 1.5; ctx.stroke()
+
+      // Traveled portion in accent color
+      const { r: mr, g: mg, b: mb } = parseOc(props.overlayColor)
+      ctx.beginPath()
+      for (let i = Math.max(1, props.trimStart); i <= idx && i < pts.length; i++) {
+        const [x0, y0] = toXY(pts[i-1].lat, pts[i-1].lon)
+        const [x1, y1] = toXY(pts[i].lat, pts[i].lon)
+        if (i === Math.max(1, props.trimStart)) ctx.moveTo(x0, y0)
+        ctx.lineTo(x1, y1)
+      }
+      ctx.strokeStyle = `rgb(${mr},${mg},${mb})`; ctx.lineWidth = 2; ctx.stroke()
+
+      // Current position: directional chevron
+      if (idx < pts.length) {
+        const [cpx, cpy] = toXY(pts[idx].lat, pts[idx].lon)
+        const hdg = bearingData.value.deg * Math.PI / 180
+        ctx.save(); ctx.translate(cpx, cpy); ctx.rotate(hdg)
+        ctx.beginPath(); ctx.moveTo(0, -7); ctx.lineTo(-5, 5); ctx.lineTo(0, 2); ctx.lineTo(5, 5)
+        ctx.closePath(); ctx.fillStyle = `rgb(${mr},${mg},${mb})`; ctx.fill(); ctx.restore()
+      }
+
+      // "N" label top-left
+      ctx.save()
+      ctx.font = `700 ${Math.max(8, Math.round(W * 0.1))}px sans-serif`
+      ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'
+      ctx.fillText('N', 4, 3); ctx.restore()
+
+      // Bearing text bottom-center
+      ctx.save()
+      ctx.font = `700 ${Math.max(7, Math.round(W * 0.09))}px sans-serif`
+      ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
+      ctx.fillText(`${bearingData.value.deg}°${bearingData.value.cardinal}`, W / 2, H - 3); ctx.restore()
+      return
+    }
+
     // ── Zoomed, heading-up inset ─────────────────────────────────────────────
     ctx.fillStyle = 'rgba(0,0,0,0.6)'
     ctx.fillRect(0, 0, W, H)
@@ -1246,10 +1772,11 @@ watch(elevChartRef, (canvas) => {
   roElev.observe(canvas)
 })
 
-watch(() => props.points,       () => { setupProjection(); draw(); drawElevChart() })
-watch(() => props.animIdx,      () => { draw(); drawElevChart() }, { flush: 'sync' })
-watch(() => props.videoSrc,     () => { setupProjection(); draw() })
-watch(() => props.overlayColor, () => { drawElevChart() })
+watch(() => props.points,        () => { setupProjection(); draw(); drawElevChart() })
+watch(() => props.animIdx,       () => { draw(); drawElevChart() }, { flush: 'sync' })
+watch(() => props.videoSrc,      () => { setupProjection(); draw() })
+watch(() => props.overlayColor,  () => { drawElevChart() })
+watch(() => props.overlayFormat, () => { nextTick(() => { setupProjection(); draw() }) })
 
 // ── Location pill position: empty space per layout ────────────────────────────
 const locationParts = computed(() => props.locationName.split(',').map(p => p.trim()).filter(Boolean))
@@ -1269,16 +1796,20 @@ const locationStyle = computed(() => ({ bottom: '8px', left: '8px', top: 'auto',
   container-type: inline-size;
 }
 
-/* Fullscreen mode */
-.stage:fullscreen,
-.stage:-webkit-full-screen {
+/* Fullscreen: stage is reparented into a plain DOM container via JS.
+   [data-fs-active] is set on the stage element while fullscreen is active. */
+.stage[data-fs-active] {
   border-radius: 0;
+  border: none;
+  /* Fit inside the black flex container without stretching.
+     aspect-ratio comes from the inline stageStyle — the browser will honour it
+     and constrain whichever axis runs out of space first. */
+  max-width: 100dvw;
+  max-height: 100dvh;
+  width: auto !important;
   height: 100dvh !important;
-  aspect-ratio: unset !important;
-  width: 100dvw;
 }
-.stage:fullscreen .fullscreen-btn,
-.stage:-webkit-full-screen .fullscreen-btn { opacity: 1; }
+.stage[data-fs-active] .fullscreen-btn { opacity: 1; }
 
 /* Fullscreen toggle button */
 /* ── Logo watermark ─────────────────────────────────────────────────────────── */
@@ -1469,7 +2000,7 @@ canvas.inset {
 }
 
 /* Arc gauges — sized relative to bottom row width */
-.hud-gauge { width: 14%; flex-shrink: 0; }
+.hud-gauge { width: 18%; flex-shrink: 0; }
 .gauge-svg { width: 100%; height: auto; display: block; }
 .gauge-lbl {
   text-align: center;
@@ -1589,13 +2120,13 @@ canvas.inset {
 .gopro-stat-head  { display: flex; align-items: center; gap: clamp(4px, 0.6cqw, 8px); }
 .gopro-icon { width: clamp(12px, 1.5cqw, 18px); height: clamp(11px, 1.4cqw, 16px); flex-shrink: 0; }
 .gopro-stat-lbl {
-  font-size: clamp(7px, 0.85cqw, 11px);
+  font-size: clamp(7px, 0.85cqw, 18px);
   font-weight: 700; color: rgba(255,255,255,.65);
   text-transform: uppercase; letter-spacing: .1em;
   text-shadow: 0 1px 4px rgba(0,0,0,.9);
 }
 .gopro-stat-val {
-  font-size: clamp(14px, 2.1cqw, 26px);
+  font-size: clamp(14px, 2.1cqw, 42px);
   font-weight: 700; color: #fff;
   font-variant-numeric: tabular-nums;
   text-shadow: 0 1px 6px rgba(0,0,0,1);
@@ -1608,13 +2139,13 @@ canvas.inset {
   display: flex; flex-direction: column; gap: clamp(1px, 0.2cqw, 3px);
 }
 .gopro-datetime-time {
-  font-size: clamp(11px, 1.4cqw, 18px);
+  font-size: clamp(11px, 1.4cqw, 28px);
   font-weight: 700; color: #fff;
   text-shadow: 0 1px 4px rgba(0,0,0,.9);
   letter-spacing: 0.03em;
 }
 .gopro-datetime-date {
-  font-size: clamp(7px, 0.85cqw, 11px);
+  font-size: clamp(7px, 0.85cqw, 18px);
   font-weight: 700; color: rgba(255,255,255,.65);
   letter-spacing: 0.06em; text-transform: uppercase;
   text-shadow: 0 1px 4px rgba(0,0,0,.9);
@@ -1623,7 +2154,7 @@ canvas.inset {
   position: absolute; bottom: 0; left: 50%;
   transform: translateX(-50%);
   display: flex; flex-direction: column; align-items: center;
-  width: clamp(100px, 18cqw, 220px);
+  width: clamp(100px, 24cqw, 460px);
   padding-bottom: 0.5%;
 }
 .gopro-gauge-svg { width: 100%; height: auto; display: block; }
@@ -1680,7 +2211,7 @@ canvas.inset {
 }
 .sport-gauge-wrap {
   position: absolute; bottom: 1%; left: 1%;
-  width: clamp(90px, 16cqw, 200px);
+  width: clamp(90px, 21cqw, 260px);
 }
 .sport-gauge-svg { width: 100%; height: auto; display: block; }
 
@@ -1714,7 +2245,7 @@ canvas.inset {
 }
 .cyc-gauge-wrap {
   display: flex; flex-direction: column; align-items: center;
-  width: clamp(100px, 17cqw, 210px); flex-shrink: 0;
+  width: clamp(100px, 22cqw, 280px); flex-shrink: 0;
 }
 .cyc-gauge-label {
   font-size: clamp(7px, 0.85cqw, 11px); font-weight: 700;
@@ -1836,7 +2367,7 @@ canvas.inset {
   text-shadow: 0 1px 4px rgba(0,0,0,.8);
   border-radius: 6px;
   padding: 4px 12px;
-  font-size: clamp(12px, 2.5cqw, 22px);
+  font-size: 15px;
   box-sizing: border-box;
   outline: 1.5px solid transparent;
   transition: outline-color .15s;
@@ -1850,9 +2381,16 @@ canvas.inset {
 }
 .caption--bottom { bottom: 8%; }
 .caption--top    { top: 8%; }
-.caption--small  { font-size: clamp(10px, 1.8cqw, 16px); }
-.caption--large  { font-size: clamp(14px, 3.2cqw, 28px); }
-.caption--bg     { background: rgba(0,0,0,0.55); }
+/* font-size handled via inline style in capOverlayStyle */
+.caption--small  { font-size: 12px; }
+.caption--medium { font-size: 15px; }
+.caption--large  { font-size: 20px; }
+.caption--bg     { background: rgba(0,0,0,var(--cap-bg-opacity, 0.55)); }
+.caption--font-sans       { font-family: Inter, Arial, sans-serif; }
+.caption--font-montserrat { font-family: 'Montserrat', sans-serif; font-weight: 700; }
+.caption--font-impact     { font-family: Impact, 'Arial Narrow', sans-serif; letter-spacing: .02em; }
+.caption--font-oswald     { font-family: 'Oswald', sans-serif; font-weight: 600; letter-spacing: .03em; }
+.caption--font-bebas      { font-family: 'Bebas Neue', Impact, sans-serif; letter-spacing: .06em; }
 
 /* Right-edge resize grip */
 .cap-resize-handle {
@@ -1879,5 +2417,440 @@ canvas.inset {
   border-radius: 2px;
   background: rgba(255,255,255,.7);
   box-shadow: 4px 0 0 rgba(255,255,255,.4);
+}
+
+/* ── Sticker 1: Finisher card ──────────────────────────────────────────────── */
+.s1-panel {
+  position: absolute; top: 0; right: 0; bottom: 0; left: 50%;
+  background: linear-gradient(to right, transparent 0%, rgba(0,0,0,0.80) 18%, rgba(0,0,0,0.92) 100%);
+  display: flex; align-items: center; justify-content: flex-end;
+  padding-right: 5%;
+}
+.s1-inner { width: 85%; display: flex; flex-direction: column; gap: clamp(5px, 1cqw, 14px); }
+.s1-title {
+  font-size: clamp(8px, 1.1cqw, 14px); font-weight: 700; color: var(--oc);
+  letter-spacing: .15em; text-shadow: 0 1px 8px rgba(0,0,0,1);
+}
+.s1-badge { display: flex; align-items: flex-end; gap: clamp(3px, 0.5cqw, 7px); line-height: 1; }
+.s1-badge-num {
+  font-size: clamp(24px, 4.8cqw, 60px); font-weight: 900; color: var(--oc);
+  text-shadow: 0 2px 16px rgba(0,0,0,.9); font-variant-numeric: tabular-nums; letter-spacing: -.02em;
+}
+.s1-badge-side { display: flex; flex-direction: column; padding-bottom: clamp(2px, 0.4cqw, 5px); }
+.s1-badge-km  { font-size: clamp(12px, 2.1cqw, 26px); font-weight: 900; color: var(--oc); letter-spacing: .04em; line-height: 1; }
+.s1-badge-fin { font-size: clamp(7px, 1cqw, 13px); font-weight: 800; color: white; letter-spacing: .2em; line-height: 1.2; }
+.s1-sep { height: 0.5px; background: rgba(255,255,255,0.18); margin: clamp(1px, 0.3cqw, 4px) 0; }
+.s1-stats { display: flex; flex-direction: column; gap: clamp(7px, 1.3cqw, 18px); }
+.s1-row   { display: flex; align-items: center; gap: clamp(7px, 1.1cqw, 14px); }
+.s1-ico   { width: clamp(16px, 2.4cqw, 30px); height: clamp(16px, 2.4cqw, 30px); color: var(--oc); flex-shrink: 0; opacity: .8; }
+.s1-lbl   { font-size: clamp(6px, 0.82cqw, 11px); font-weight: 700; color: rgba(255,255,255,.45); letter-spacing: .12em; text-transform: uppercase; line-height: 1; }
+.s1-val   { font-size: clamp(14px, 2.4cqw, 30px); font-weight: 700; color: white; font-variant-numeric: tabular-nums; text-shadow: 0 1px 6px rgba(0,0,0,.9); line-height: 1.1; }
+.s1-unit  { font-size: .58em; font-weight: 600; color: rgba(255,255,255,.45); }
+
+/* ── Sticker 2: Route card ─────────────────────────────────────────────────── */
+canvas.s2-map {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  aspect-ratio: unset; border-radius: 0; border: none; display: block;
+}
+.s2-start, .s2-end {
+  position: absolute; display: flex; align-items: center;
+  gap: clamp(5px, 0.7cqw, 10px);
+  background: rgba(0,0,0,0.65); border-radius: 6px;
+  padding: clamp(4px, 0.6cqw, 8px) clamp(6px, 0.9cqw, 12px);
+  backdrop-filter: blur(6px); border: 0.5px solid rgba(255,255,255,0.15);
+}
+.s2-start { top: clamp(8px, 1.2cqw, 18px); left: clamp(8px, 1.2cqw, 18px); }
+.s2-end   { bottom: clamp(36px, 4.5cqw, 60px); right: clamp(8px, 1.2cqw, 18px); }
+.s2-dot         { width: clamp(8px, 1.1cqw, 14px); height: clamp(8px, 1.1cqw, 14px); border-radius: 50%; flex-shrink: 0; }
+.s2-dot-start   { background: #00e676; box-shadow: 0 0 8px #00e676; }
+.s2-dot-end     { background: #ff5252; box-shadow: 0 0 8px #ff5252; }
+.s2-ptag  { font-size: clamp(8px, 1.1cqw, 14px); font-weight: 800; color: white; letter-spacing: .1em; line-height: 1; text-shadow: 0 1px 4px rgba(0,0,0,.9); }
+.s2-coord { font-size: clamp(6px, 0.75cqw, 10px); font-weight: 500; color: rgba(255,255,255,.5); font-variant-numeric: tabular-nums; line-height: 1.4; text-shadow: 0 1px 4px rgba(0,0,0,.9); }
+.s2-statsbox {
+  position: absolute; top: clamp(8px, 1.2cqw, 18px); right: clamp(8px, 1.2cqw, 18px);
+  background: rgba(0,0,0,0.70); border-radius: 8px;
+  padding: clamp(6px, 0.9cqw, 12px) clamp(8px, 1.2cqw, 16px);
+  border: 0.5px solid rgba(255,255,255,0.15); backdrop-filter: blur(8px);
+  display: flex; flex-direction: column; gap: clamp(4px, 0.6cqw, 8px);
+}
+.s2-srow { display: flex; justify-content: space-between; align-items: baseline; gap: clamp(10px, 1.5cqw, 20px); }
+.s2-slbl { font-size: clamp(6px, 0.8cqw, 10px); font-weight: 700; color: rgba(255,255,255,.4); letter-spacing: .1em; text-transform: uppercase; }
+.s2-sval { font-size: clamp(10px, 1.4cqw, 18px); font-weight: 700; color: white; font-variant-numeric: tabular-nums; text-shadow: 0 1px 4px rgba(0,0,0,.9); white-space: nowrap; }
+.s2-route-title {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  font-size: clamp(11px, 1.8cqw, 24px); font-weight: 900; color: white;
+  letter-spacing: .12em; text-transform: uppercase;
+  text-shadow: 0 2px 12px rgba(0,0,0,1), 0 0 30px rgba(0,0,0,.9);
+  text-align: center; white-space: nowrap; pointer-events: none;
+}
+
+/* ── Dashboard HUD ──────────────────────────────────────────────────────── */
+.dash-bar {
+  position: absolute;
+  bottom: 28px; left: 0; right: 0;
+  height: 34%;
+  display: flex;
+  align-items: stretch;
+  background: rgba(0, 0, 0, 0.78);
+  border-top: 1px solid rgba(255,255,255,0.08);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  pointer-events: none;
+}
+
+.dash-panel {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-evenly;
+  padding: clamp(6px, 1cqw, 14px) clamp(8px, 1.4cqw, 18px);
+  border-right: 1px solid rgba(255,255,255,0.07);
+  min-width: 0;
+  flex-shrink: 0;
+  width: 14%;
+}
+.dash-panel--left  { border-left: none; }
+.dash-panel--right { border-right: none; }
+
+.dash-center {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  border-right: 1px solid rgba(255,255,255,0.07);
+}
+.dash-elev-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.dash-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.dash-lbl {
+  font-size: clamp(5px, 0.65cqw, 8px);
+  font-weight: 700;
+  color: rgba(255,255,255,0.38);
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  white-space: nowrap;
+}
+.dash-val-big {
+  font-size: clamp(18px, 3.2cqw, 44px);
+  font-weight: 800;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 20px currentColor;
+}
+.dash-val {
+  font-size: clamp(12px, 2cqw, 28px);
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 16px currentColor;
+}
+.dash-unit {
+  font-size: clamp(5px, 0.7cqw, 9px);
+  font-weight: 600;
+  color: rgba(255,255,255,0.4);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+.dash-divider-h {
+  height: 1px;
+  background: rgba(255,255,255,0.07);
+  flex-shrink: 0;
+}
+
+/* Progress bar row at the very bottom of the stage */
+.dash-progress-row {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 28px;
+  background: rgba(0,0,0,0.88);
+  border-top: 1px solid rgba(255,255,255,0.06);
+}
+.dash-progress-fill {
+  height: 3px;
+  transition: width 0.08s linear;
+}
+.dash-dist-labels {
+  position: relative;
+  height: 100%;
+  pointer-events: none;
+}
+.dash-tick {
+  position: absolute;
+  top: 6px;
+  transform: translateX(-50%);
+  font-size: clamp(5px, 0.65cqw, 8px);
+  font-weight: 600;
+  color: rgba(255,255,255,0.3);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  white-space: nowrap;
+}
+
+/* ── Tactical HUD ──────────────────────────────────────────────────────────── */
+.tac-root {
+  position: absolute; inset: 0;
+  pointer-events: none;
+  border: 1px solid rgba(255,255,255,0.28);
+}
+.tac-corner {
+  position: absolute;
+  width: clamp(12px, 2.2cqw, 30px); height: clamp(12px, 2.2cqw, 30px);
+  border-style: solid; border-color: rgba(255,255,255,0.9);
+}
+.tac-tl { top: -1px; left: -1px;  border-width: 2px 0 0 2px; }
+.tac-tr { top: -1px; right: -1px; border-width: 2px 2px 0 0; }
+.tac-bl { bottom: -1px; left: -1px;  border-width: 0 0 2px 2px; }
+.tac-br { bottom: -1px; right: -1px; border-width: 0 2px 2px 0; }
+
+.tac-left {
+  position: absolute; top: 0; bottom: 12%; left: 0; width: 26%;
+  background: linear-gradient(to right, rgba(0,0,0,0.68) 65%, transparent);
+  padding: clamp(8px, 1.4cqw, 20px) clamp(6px, 1.1cqw, 16px);
+  display: flex; flex-direction: column; justify-content: flex-start;
+}
+.tac-lbl {
+  font-size: clamp(6px, 0.78cqw, 10px); font-weight: 700;
+  color: rgba(255,255,255,0.42); letter-spacing: .2em; text-transform: uppercase;
+  margin-bottom: clamp(1px, 0.2cqw, 3px);
+}
+.tac-big {
+  font-size: clamp(28px, 5.8cqw, 76px); font-weight: 800; color: #fff;
+  line-height: 1; letter-spacing: -.03em; font-variant-numeric: tabular-nums;
+  text-shadow: 0 2px 16px rgba(0,0,0,.9);
+}
+.tac-big--md { font-size: clamp(18px, 3.4cqw, 46px); }
+.tac-unit {
+  font-size: clamp(6px, 0.78cqw, 10px); font-weight: 700;
+  color: rgba(255,255,255,0.38); letter-spacing: .22em; text-transform: uppercase;
+  margin-bottom: clamp(3px, 0.6cqw, 8px);
+}
+.tac-sep {
+  height: 1px; background: rgba(255,255,255,0.14);
+  margin: clamp(4px, 0.75cqw, 10px) 0;
+}
+.tac-mini-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-bottom: clamp(2px, 0.4cqw, 5px);
+}
+.tac-mini-lbl {
+  font-size: clamp(5px, 0.65cqw, 8px); font-weight: 700;
+  color: rgba(255,255,255,0.32); letter-spacing: .12em; text-transform: uppercase;
+}
+.tac-mini-val {
+  font-size: clamp(7px, 0.92cqw, 12px); font-weight: 700;
+  color: rgba(255,255,255,0.82); font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 4px rgba(0,0,0,.8);
+}
+.tac-vline {
+  position: absolute; top: 4%; bottom: 14%; width: 1px;
+  background: linear-gradient(to bottom, transparent, rgba(255,255,255,0.22) 15%, rgba(255,255,255,0.22) 85%, transparent);
+}
+.tac-vline--l { left: 26%; }
+.tac-vline--r { right: 26%; }
+.tac-right {
+  position: absolute; top: 0; bottom: 12%; right: 0; width: 26%;
+  background: linear-gradient(to left, rgba(0,0,0,0.68) 65%, transparent);
+  padding: clamp(8px, 1.4cqw, 20px) clamp(6px, 1.1cqw, 16px);
+  display: flex; flex-direction: column; justify-content: space-around;
+}
+.tac-rstat { display: flex; flex-direction: column; gap: clamp(1px, 0.2cqw, 2px); }
+.tac-rlbl {
+  font-size: clamp(5px, 0.65cqw, 8px); font-weight: 700;
+  color: rgba(255,255,255,0.38); letter-spacing: .18em; text-transform: uppercase;
+}
+.tac-rval {
+  font-size: clamp(14px, 2.8cqw, 38px); font-weight: 800; color: #fff;
+  line-height: 1; letter-spacing: -.02em; font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 8px rgba(0,0,0,.9);
+}
+.tac-runit { font-size: .38em; font-weight: 600; color: rgba(255,255,255,0.38); letter-spacing: .06em; }
+.tac-rsep { height: 1px; background: rgba(255,255,255,0.1); margin: clamp(3px, 0.5cqw, 6px) 0; }
+.tac-bottom {
+  position: absolute; bottom: 0; left: 0; right: 0; height: 12%;
+  background: rgba(0,0,0,0.52);
+  border-top: 1px solid rgba(255,255,255,0.14);
+  display: flex; flex-direction: column; justify-content: center;
+  padding: 0 clamp(8px, 1.2cqw, 16px); gap: clamp(2px, 0.35cqw, 4px);
+}
+.tac-prog-wrap {
+  height: 1px; background: rgba(255,255,255,0.18); width: 100%; position: relative;
+}
+.tac-prog-fill {
+  position: absolute; inset: 0 auto 0 0;
+  background: rgba(255,255,255,0.72); transition: width .05s linear;
+}
+.tac-brow { display: flex; justify-content: space-between; }
+.tac-bval {
+  font-size: clamp(6px, 0.72cqw, 9px); font-weight: 600;
+  color: rgba(255,255,255,0.42); letter-spacing: .09em;
+  font-variant-numeric: tabular-nums; text-transform: uppercase;
+}
+
+/* ── Portrait mode layout overrides ───────────────────────────────────────── */
+
+/* Map inset: slightly smaller to free up edge space */
+.stage.is-portrait canvas.inset {
+  width: 18%;
+}
+
+/* ── Classic HUD portrait ──────────────────────────────────────────────────── */
+
+/* Hide laps — too wide for portrait; distance/time in top-info covers it */
+.stage.is-portrait .hud-laps { display: none; }
+
+/* Top info spans from left edge to clear of map inset */
+.stage.is-portrait .hud-top-info {
+  left: 2%;
+  right: 20%;
+}
+
+/* Elevation chart: same horizontal span as top-info */
+.stage.is-portrait .hud-elev-canvas {
+  left: 2%;
+  right: 20%;
+}
+
+/* Stat panels: allow more horizontal room in the narrow portrait canvas */
+.stage.is-portrait .hud-panel-left  { max-width: 40%; }
+.stage.is-portrait .hud-panel-right { max-width: 40%; }
+
+/* ── GoPro HUD portrait ────────────────────────────────────────────────────── */
+
+/* Start left panel higher so it clears the top coords/bearing block */
+.stage.is-portrait .gopro-left-panel { top: 20%; }
+
+/* ── Sport HUD portrait ────────────────────────────────────────────────────── */
+
+/* Move GPS coords to clear the map inset on the right */
+.stage.is-portrait .sport-coords { right: 20%; }
+
+/* ── Cycling HUD portrait ──────────────────────────────────────────────────── */
+
+/* Larger gauge for portrait so it reads well in the narrow canvas */
+.stage.is-portrait .cyc-gauge-wrap {
+  width: clamp(100px, 28cqw, 230px);
+}
+
+/* ── Dashboard HUD portrait: 2×2 panel grid ────────────────────────────────── */
+
+.stage.is-portrait .dash-bar {
+  height: 46%;
+  flex-wrap: wrap;
+  overflow: hidden;
+}
+
+/* Each panel takes 50% width → 2 columns, 2 rows */
+.stage.is-portrait .dash-panel {
+  width: 50%;
+  flex: none;
+  box-sizing: border-box;
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+}
+
+/* Restore missing right border on even panels */
+.stage.is-portrait .dash-panel:nth-child(2) {
+  border-right: 1px solid rgba(255,255,255,0.07);
+}
+.stage.is-portrait .dash-panel--right {
+  border-right: none;
+}
+
+/* Hide elevation chart — no room in 2-column grid */
+.stage.is-portrait .dash-center { display: none; }
+
+/* ── Sticker 1 portrait ────────────────────────────────────────────────────── */
+
+/* Widen the panel so content isn't squeezed in narrow portrait frame */
+.stage.is-portrait .s1-panel {
+  left: 22%;
+  background: linear-gradient(to right, transparent 0%, rgba(0,0,0,0.80) 15%, rgba(0,0,0,0.92) 100%);
+}
+
+/* ── Tactical HUD portrait ─────────────────────────────────────────────────── */
+
+/* Wider side panels so the middle still has a visible strip of video */
+.stage.is-portrait .tac-left  { width: 36%; }
+.stage.is-portrait .tac-right { width: 36%; }
+.stage.is-portrait .tac-vline--l { left: 36%; }
+.stage.is-portrait .tac-vline--r { right: 36%; }
+
+/* ── Magene HUD ─────────────────────────────────────────────────────────────── */
+.mag-brand-block {
+  position: absolute; top: 4%; left: 3%;
+  display: flex; flex-direction: column; gap: clamp(1px, 0.3cqw, 4px);
+}
+.mag-brand-text {
+  font-size: clamp(7px, 1cqw, 13px); font-weight: 700;
+  color: rgba(255,255,255,0.9); letter-spacing: 0.04em; white-space: nowrap;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+}
+.mag-ts {
+  font-size: clamp(6px, 0.85cqw, 11px); font-weight: 500;
+  color: rgba(255,255,255,0.65); white-space: nowrap;
+  font-variant-numeric: tabular-nums; text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+}
+
+.mag-gforce-box {
+  position: absolute; top: 3%; right: 3%;
+  display: flex; flex-direction: column; align-items: center; gap: clamp(2px, 0.4cqw, 5px);
+}
+.mag-gf-svg { width: clamp(32px, 6cqw, 78px); height: auto; display: block; }
+.mag-gf-val {
+  font-size: clamp(7px, 0.95cqw, 13px); font-weight: 700; color: white;
+  font-variant-numeric: tabular-nums; text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+}
+
+.mag-left-stats {
+  position: absolute; top: 36%; left: 3%;
+  display: flex; flex-direction: column; gap: clamp(8px, 1.4cqw, 20px);
+}
+.mag-right-stats {
+  position: absolute; top: 36%; right: 3%;
+  display: flex; flex-direction: column; align-items: flex-end; gap: clamp(8px, 1.4cqw, 20px);
+}
+.mag-stat { display: flex; flex-direction: column; gap: clamp(1px, 0.2cqw, 3px); }
+.mag-stat--r { align-items: flex-end; }
+.mag-stat-lbl {
+  font-size: clamp(6px, 0.82cqw, 11px); font-weight: 400;
+  color: rgba(255,255,255,0.65); letter-spacing: 0.02em;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+}
+.mag-stat-val {
+  font-size: clamp(15px, 2.5cqw, 34px); font-weight: 700; color: white;
+  font-variant-numeric: tabular-nums; line-height: 1;
+  text-shadow: 0 1px 6px rgba(0,0,0,1); white-space: nowrap;
+}
+.mag-stat-unit { font-size: 0.5em; font-weight: 600; color: rgba(255,255,255,0.6); }
+
+.mag-heading-wrap {
+  position: absolute; bottom: 3%;
+  left: 50%; transform: translateX(-50%);
+  width: clamp(56px, 15cqw, 140px);
+}
+.mag-heading-svg { width: 100%; height: auto; display: block; }
+
+.mag-speed-wrap {
+  position: absolute; bottom: 0; right: 0;
+  width: clamp(88px, 38cqw, 230px);
+}
+.mag-speed-svg { width: 100%; height: auto; display: block; }
+
+/* Magene map canvas: square inset at bottom-left */
+canvas.mag-map {
+  position: absolute;
+  bottom: 6%;
+  left: 2%;
+  width: clamp(56px, 20cqw, 160px);
+  aspect-ratio: 1 / 1;
+  border-radius: 6px;
+  display: block;
 }
 </style>

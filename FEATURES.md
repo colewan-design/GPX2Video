@@ -1,245 +1,187 @@
-# GPX2Video — Feature Documentation
+# GPX2VIDEO — Features & Libraries
 
-## Overview
-Browser-based tool that overlays GPS data (speed, elevation, distance) onto a video file and exports it as an MP4. No server required — everything runs in the browser.
+## Libraries
 
----
+### Runtime Dependencies
 
-## 1. GPX File Loading
+| Package | Version | Purpose |
+|---|---|---|
+| `vue` | ^3.4.0 | UI framework (Composition API) |
+| `@xenova/transformers` | ^2.17.2 | In-browser Whisper AI transcription via WASM |
+| `chart.js` | ^4.4.1 | Activity charts (speed, elevation, HR, cadence, power) |
+| `mp4-muxer` | ^5.2.2 | MP4 container muxing for video export |
+| `mp4box` | ^2.3.0 | MP4 demuxing — extracts encoded audio/video samples and rotation metadata |
 
-**Component:** `DropZone.vue` · **Composable:** `useGpxParser.js`
+### Dev Dependencies
 
-- Drag-and-drop or click-to-browse for `.gpx` files
-- Parses all `<trkpt>` elements: latitude, longitude, elevation, timestamp
-- Computes per-point values:
-  - **Cumulative distance** (metres) via Haversine formula
-  - **Instantaneous speed** (km/h) from consecutive timestamps
-  - **Smoothed speed** — 5-point sliding-window average to reduce GPS noise
-- Caps raw speed at 80 km/h before smoothing to remove GPS spike artefacts
-- Warns when GPX has no timestamps (speed will read 0; Strava/Garmin exports required for speed data)
-- Supports any standard `.gpx` file: Strava, Garmin Connect, Komoot, etc.
+| Package | Version | Purpose |
+|---|---|---|
+| `vite` | ^5.4.0 | Build tool and dev server |
+| `@vitejs/plugin-vue` | ^5.0.0 | Vue SFC support for Vite |
+| `sharp` | ^0.34.5 | Image processing (sticker export) |
+| `playwright` | ^1.60.0 | End-to-end testing |
 
-**Session stats computed on load:**
+### Browser APIs Used
 
-| Stat | Detail |
-|------|--------|
-| Total distance | km, from cumulative Haversine |
-| Elevation gain | metres, summed positive deltas |
-| Average speed | km/h, mean of non-zero smoothed values |
-| Max speed | km/h, array-reduce (avoids stack overflow on large tracks) |
-| Total time | ms, last timestamp − first timestamp |
-
----
-
-## 2. GPX Map Visualization
-
-**Component:** `VideoStage.vue` (canvas layer)
-
-- Canvas renders the full route as a faint trail
-- Traveled portion is **speed-colored**: blue (slow) → orange (fast), interpolated per segment
-- Current position shown as a white dot with a soft halo ring
-- Canvas projection: lat/lon → pixel using min/max bounding box with 40 px padding
-- `ResizeObserver` keeps canvas pixel dimensions in sync with CSS layout at all times
-- `arrayMax` uses `reduce` instead of spread to avoid stack overflow on 10 000+ point tracks
+| API | Usage |
+|---|---|
+| **WebCodecs** (`VideoEncoder`, `VideoDecoder`, `AudioEncoder`) | GPU-accelerated MP4 export |
+| **OffscreenCanvas** | Off-main-thread frame rendering during export |
+| **WebGL** | Shader-based real-time and export video filters |
+| **Web Workers** | Whisper model runs in a dedicated worker thread |
+| **`requestVideoFrameCallback`** | Frame-accurate video capture for export |
+| **`IndexedDB`** | Persistent cache for reverse geocode results |
+| **`MediaStreamTrackProcessor`** | Audio capture fallback via `captureStream()` |
+| **`AudioContext`** | PCM decode fallback for audio re-encoding |
+| **Nominatim API** (OpenStreetMap) | Reverse geocoding (no API key required) |
+| **Strava API** | OAuth 2.0 activity import |
 
 ---
 
-## 3. GPX-Only Animation Playback
+## Features
 
-**Composable:** `useAnimation.js` · **Component:** `PlaybackControls.vue`
+### Media Import
 
-- `requestAnimationFrame` loop advances the track point index over time
-- Playback speeds: **1×, 2×, 5×, 10×, 20×**
-- Play / Pause / Reset controls
-- `lastTime` is nulled on pause so resume does not compute a huge elapsed gap
-- Animation always entered via `requestAnimationFrame` — never called directly (prevents NaN cascade from undefined timestamp)
-- Speed selector hidden automatically when a video is loaded
+- **GPX file import** — drag-and-drop or file picker; parses track points, timestamps, speed, elevation, heart rate, cadence, power, temperature, and grade
+- **Strava integration** — OAuth 2.0 connect; browse and import GPX directly from Strava activities
+- **Multi-file video import** — load one or more MP4 files; each becomes a segment on the concatenated timeline; append additional clips after the initial load
 
----
+### GPX–Video Sync
 
-## 4. HUD Overlay
+- **Auto-detect offset** — reads MP4 creation timestamp from container `mvhd` box; falls back to file `lastModified` date when no MP4 timestamp is found
+- **Manual offset slider** — ±300 s range with 0.5 s steps; shown below the video source loader
+- **Sync status badge** — shows `Auto ✓ (file date)`, `Auto ✓`, or `Manual`
+- **Sync lane in timeline** — visual overlay of the GPX window mapped onto video time
 
-**Component:** `VideoStage.vue` (HTML overlay)
+### Video Timeline
 
-Rendered as a dark-gradient bar at the bottom of the stage:
+- **Multi-clip timeline** — drag to reorder clips; inline trim handles per clip
+- **Split clip** — `Ctrl+B` or toolbar button splits at the current playhead position
+- **Delete clip** — `Delete`/`Backspace` or toolbar button removes the selected clip
+- **Merge clips** — merge two adjacent clips back into one
+- **GPX timeline lane** — scrollable view of track points aligned to video time
+- **Charts lane** — Chart.js graphs for speed, elevation, heart rate, cadence, and power
+- **Draggable drop zone** — drop a new video file directly onto the timeline to append it
 
-| Field | Source |
-|-------|--------|
-| Speed | `point.speedSmooth` (km/h) |
-| Elevation | `point.ele` rounded to integer (m) |
-| Distance | `point.cumDist / 1000` (km) |
-| Progress bar | `progress` prop (0–1) |
-| Elapsed time | `point.time − points[0].time`, formatted `h:mm:ss` |
-| Total time | GPX duration or point count fallback |
+### Playback
 
----
+- **Play / Pause / Reset** with `Space` keyboard shortcut
+- **Playback speed** selector
+- **Timecode display** — `HH:MM:SS:FF` at 30 fps
+- **Keyboard shortcuts**
 
-## 5. Elevation & Speed Charts
+| Key | Action |
+|---|---|
+| `Space` | Play / Pause |
+| `Ctrl+B` | Split clip at playhead |
+| `Delete` / `Backspace` | Delete selected clip |
 
-**Component:** `ChartRow.vue` · **Library:** Chart.js
+### Overlay Formats
 
-- Two side-by-side area charts rendered below the main stage
-- **Elevation profile** — blue fill, X axis = distance (km)
-- **Speed over distance** — orange fill, X axis = distance (km)
-- Sampled to max ~200 points for rendering performance
-- Charts are destroyed and rebuilt when a new GPX file is loaded
+Seven HUD layouts selectable in the right panel:
 
----
+| Format | Description |
+|---|---|
+| `Classic` | Full stat panel (4 rows) + map inset + bottom gradient |
+| `Minimal` | Compact speed / distance / time strip |
+| `GoPro` | Progress bar + multi-metric layout, GoPro-style |
+| `Sport` | Large speed + pace display |
+| `Cycling` | Power / cadence / HR focused layout |
+| `Sticker 1` | Portrait static activity sticker |
+| `Sticker 2` | Full-map activity sticker |
 
-## 6. Video File Loading
+**Live metrics rendered on every frame:**
+- Speed (km/h), Pace (min/km), Distance (km), Total distance
+- Heart rate (bpm), Cadence (rpm), Power (W), Estimated calories
+- Elevation gain / loss (m), Grade (%), Temperature (°C)
+- Elapsed time, Current lap / total laps (auto 1 km laps with best lap highlight)
+- Clock time derived from GPX timestamps + offset
 
-**Component:** `VideoLoader.vue` · **Composable:** `useVideoSync.js`
+**Map inset** — heading-up mini-map with speed-colored trail; rotates with direction of travel; north indicator arrow
 
-- Compact drag-and-drop strip accepts any browser-playable video (`video/*`)
-- Creates an `ObjectURL` for the file; previous URL is revoked on replacement
-- Once loaded, `VideoStage` switches to **video mode**:
-  - `<video>` element fills the stage (`object-fit: contain`, black bars preserved)
-  - GPX map canvas becomes a **168 × 112 px inset** in the bottom-right corner
-  - Stage switches to `aspect-ratio: 16 / 9`
+**Accent color picker** — applies a custom color to progress bars, icons, and map highlights
 
----
+### Video Filters (WebGL)
 
-## 7. MP4 Creation Time Parser
+Applied in real-time during preview and baked into the export via a WebGL unsharp-mask + color-matrix shader:
 
-**Utility:** `src/utils/mp4.js`
+| Filter | Effect |
+|---|---|
+| None | Pass-through |
+| Clarity | Large-radius unsharp mask + boosted contrast and saturation |
+| Vivid | Sharpened + high saturation |
+| Cinematic | Desaturated, high-contrast, darker |
+| Warm | Sepia tint + boosted saturation |
+| Cool | Slight blue hue shift |
+| B&W | Full desaturation |
+| Vintage | Low contrast, sepia, faded |
+| Fade | Lifted blacks, low contrast |
 
-Reads the first 8 MB of the file to locate the MP4 `moov → mvhd` box:
+### Speed Curves
 
-- Supports both **version 0** (32-bit creation time) and **version 1** (64-bit)
-- Converts from MP4 epoch (1904-01-01) to Unix epoch
-- Sanity-checks the result: must be between 2000-01-01 and 2100-01-01
-- Returns `null` if the box is not found or the timestamp is invalid
-- Used to auto-compute the sync offset without any user input
+Variable-speed presets applied per-clip at export time via seek-based frame sampling:
 
----
+| Preset | Description |
+|---|---|
+| Normal | Real-time 1× |
+| Hero | Slow-motion intro/outro (0.25×), normal in the middle |
+| Bullet | Extreme slow-motion (0.08×) in the middle section |
+| Montage | Alternating 2× fast and 0.5× slow |
+| Rush | Uniform 2× fast-forward |
 
-## 8. GPX ↔ Video Sync
+### AI Captions (Whisper)
 
-**Composable:** `useVideoSync.js`
+- **In-browser transcription** — `@xenova/transformers` runs `Xenova/whisper-*.en` entirely in the browser via WASM; no server or API key needed
+- **Model selector** — tiny / small / medium (trades speed vs. accuracy)
+- **Caption editor** — add, edit, remove, and clear segments with `start`/`end` timestamps and text
+- **Caption styling options**
 
-### Auto-detection
-When a video is loaded alongside a timestamped GPX:
-```
-autoOffsetSec = (mp4CreationTime − gpxPoints[0].time) / 1000
-```
-Positive value = GPS recording started before the video. Displayed with an **Auto-detected** badge.
+| Option | Values |
+|---|---|
+| Font family | Inter (sans), Montserrat, Impact, Oswald, Bebas Neue |
+| Font size | Numeric px (scales to export resolution) |
+| Color | Hex color picker |
+| Bold | Toggle |
+| ALL CAPS / lowercase | Toggle |
+| Placement | 9-position grid (top/mid/bot × left/center/right) |
+| Drag position | Drag caption to any position; resize width handle |
+| Background | Semi-transparent rounded rect |
+| Background opacity | 0–100 % |
+| Outline | Text stroke for contrast on bright backgrounds |
 
-### Manual offset slider
-- Range: **−300 s to +300 s** in 0.5 s steps
-- `totalOffsetSec = autoOffsetSec + manualOffsetSec`
-- Reset button (↺) zeroes `manualOffsetSec` back to the auto value
-- Displayed with a **Manual** badge when `autoDetected` is false
+- **Captions baked into export** — rendered on the 2D canvas at full export resolution
 
-### Frame → GPX point lookup
-For each `timeupdate` event:
-```
-targetMs = gpxPoints[0].time + (totalOffsetSec + video.currentTime) × 1000
-```
-Binary search over `gpxPoints` timestamps finds the nearest point. Result is clamped to `[trimStart, trimEnd]`.
+### Video Export
 
-### No-timestamp fallback
-If the GPX has no timestamps, point index is computed as:
-```
-idx = round((currentTime / duration) × (points.length − 1))
-```
+- **WebCodecs pipeline** — `VideoDecoder` (fast path for clips ≤ 60 s) or `requestVideoFrameCallback` (legacy seek+play path); `VideoEncoder` outputs H.264/AVC; muxed via `mp4-muxer`
+- **Audio handling** — prefers stream-copy (splices encoded AAC frames directly, lossless); falls back to `captureStream()` + `AudioEncoder`; final fallback is `AudioContext` PCM decode + re-encode
+- **Video rotation correction** — reads `tkhd` rotation matrix from MP4 container; compensates 90°/180°/270° rotation that `ctx.drawImage` ignores
+- **Hardware acceleration** — tries GPU-accelerated `VideoEncoder` first; auto-falls back to software on error
+- **Multi-segment export** — concatenates clips from multiple video files with correct audio timing
+- **Speed curve export** — seek-based frame sampling when a non-flat speed curve is active
+- **Resolution cap** — downscales to 1920 px on the longest edge; output always has even-pixel dimensions (H.264 requirement)
+- **Output** — downloads `gpx2video-export.mp4` directly from the browser; no upload required
 
----
+### Sticker Export
 
-## 9. GPX Timeline & Trim
+- Exports a standalone activity summary card (route map + key stats) as a PNG image using `sharp`
 
-**Component:** `SyncPanel.vue` · **Composable:** `useVideoSync.js`
+### Track Stats Panel
 
-### Elevation timeline
-- Canvas draws a sampled elevation profile (up to 400 samples) as a filled area chart
-- Always visible once a GPX file is loaded
-- Header shows trimmed distance range and duration: e.g., `2.3 km → 18.5 km  ·  32:10`
+- Total distance, moving time, elevation gain / loss
+- Max speed, average speed, average heart rate, average cadence, average power
 
-### Trim handles
-- **Left handle** = `trimStart` index — sets where in the GPX the video begins
-- **Right handle** = `trimEnd` index — sets where in the GPX the video ends
-- Dimmed CSS overlays shade the excluded portions of the elevation chart
-- Minimum gap enforced: 2% of total points (prevents handles from stacking)
-- Touch-friendly: 20 px wide hit area, `ew-resize` cursor
+### Reverse Geocoding
 
-### Live stats on drag
-`useVideoSync` stores `lastCurrentTime` and `lastDuration` from the most recent `timeupdate`. A watcher on `[trimStart, trimEnd]` immediately re-runs `_applyTime` so the HUD stats and map dot update in real time as you drag, even while the video is paused.
+- Calls Nominatim (OpenStreetMap) with the current GPX point as the user moves through the track
+- Results cached in **IndexedDB** with a ~111 m grid key to minimize requests
+- Location name shown in the app header and included in overlay / export
 
-### Video preview on drag
-`onTrimStart` / `onTrimEnd` in `App.vue` call `gpxIdxToVideoTime(idx)` to convert the GPX index back to a video timestamp and call `videoStageRef.seekTo(t)`. The subsequent `seeked → timeupdate` cycle confirms the stats.
+### Canvas & Layout
 
-```
-gpxIdxToVideoTime(idx):
-  if timestamps → (gpxPoints[idx].time − gpxPoints[0].time) / 1000 − totalOffsetSec
-  else          → (idx / N) × lastDuration
-```
-
-### Playhead
-White vertical line tracks `animIdx / (points.length − 1)` across the elevation chart. A small circle at the bottom makes it easier to read at a glance.
-
----
-
-## 10. MP4 Export with Overlay
-
-**Composable:** `useVideoExport.js` · **Library:** `mp4-muxer`
-
-### Requirements
-- Chrome or Edge 94+ (WebCodecs API — `VideoEncoder`, `VideoFrame`)
-- No server, no file upload — fully client-side
-
-### Pipeline
-```
-video element
-  └─ requestVideoFrameCallback (real-time, frame-accurate)
-       └─ OffscreenCanvas composite
-            ├─ drawImage(videoEl)          — video frame
-            ├─ drawMapInset()              — GPX map inset (bottom-right)
-            └─ drawHud()                   — speed / elevation / distance / bar
-                 └─ VideoEncoder (H.264)
-                      └─ mp4-muxer (ArrayBufferTarget)
-                           └─ Blob download
-```
-
-### Video trim
-Before encoding, GPX trim indices are converted to video timestamps:
-
-```
-vTrimStart = (gpxPoints[trimStart].time − gpxPoints[0].time) / 1000 − totalOffsetSec
-vTrimEnd   = (gpxPoints[trimEnd].time   − gpxPoints[0].time) / 1000 − totalOffsetSec
-```
-
-- Capture starts at `vTrimStart`; stops at `vTrimEnd`
-- Frame timestamps written as `(vt − vTrimStart) × 1 000 000` µs → exported MP4 starts at `0:00`
-- No-timestamp fallback: linear proportion of video duration
-
-### Encoding parameters
-- Codec: H.264, profile and level auto-selected by resolution:
-
-  | Output width | AVC level | Max area |
-  |---|---|---|
-  | ≤ 1280 px | 3.1 (`avc1.4d001f`) | 921 600 px |
-  | ≤ 1920 px | 4.0 (`avc1.4d0028`) | 2 097 152 px |
-  | > 1920 px | 5.1 (`avc1.4d0033`) | 8 912 896 px |
-
-- Bitrate: 8 Mbps
-- Framerate: 30 fps
-- Source capped at 1920 px wide; dimensions rounded to nearest even number (H.264 requirement)
-- Keyframe every 2 seconds
-
-### Overlay drawing (canvas)
-Dimensions scale relative to video height (`s = H / 320`):
-
-**Map inset** — `168 s × 112 s` px, bottom-right corner, 12 s px from edge, 64 s px above HUD:
-- Rounded-rect clip mask
-- Faint full trail + speed-colored traveled segment + position dot
-- All line widths, dot radius, padding scaled by `s`
-
-**HUD** — bottom gradient, same layout as the live HTML overlay:
-- Stats text, unit, label — all sized by `s`
-- Progress bar drawn with a manual `arcTo` rounded-rect (avoids OffscreenCanvas `roundRect` compatibility issues)
-- Time labels left/right-aligned at bar edges
-
-### Audio
-Not included in the exported file. Re-combine with the original using DaVinci Resolve, CapCut, or `ffmpeg -i export.mp4 -i original.mp4 -c copy -map 0:v -map 1:a output.mp4`.
+- **Resizable panels** — drag handles on left panel (col-resize), right panel (col-resize), and timeline (row-resize)
+- **Aspect ratio selector** — 16:9, 9:16, 1:1 for the preview canvas and export dimensions
+- **Auto aspect detection** — sets aspect ratio to 9:16 automatically when a portrait video is loaded
 
 ---
 
@@ -248,20 +190,40 @@ Not included in the exported file. Re-combine with the original using DaVinci Re
 ```
 src/
 ├── utils/
-│   ├── geo.js            haversine, lerp, arrayMax, arrayMin, fmtTime
-│   └── mp4.js            MP4 mvhd creation-time parser
+│   ├── geo.js              haversine, lerp, arrayMax, fmtTime
+│   ├── mp4.js              MP4 mvhd creation-time parser
+│   ├── filters.js          WebGL shader parameters per filter preset
+│   └── speedCurve.js       Speed curve presets and frame-time builder
+├── workers/
+│   └── whisper.worker.js   Web Worker that hosts @xenova/transformers
 ├── composables/
-│   ├── useGpxParser.js   GPX XML → point array + session stats
-│   ├── useAnimation.js   rAF-based GPX-only playback loop
-│   ├── useVideoSync.js   video ↔ GPX sync, trim, offset, auto-detect
-│   └── useVideoExport.js WebCodecs H.264 export with overlay + trim
+│   ├── useGpxParser.js           GPX XML → point array + session stats
+│   ├── useAnimation.js           rAF-based GPX-only playback loop
+│   ├── useVideoSync.js           Video ↔ GPX sync, multi-clip, trim, offset, auto-detect
+│   ├── useVideoExport.js         WebCodecs H.264 export with overlay, audio, speed curves
+│   ├── useVideoShader.js         WebGL shader setup and per-filter rendering
+│   ├── useWhisperTranscription.js  Whisper worker bridge + caption segment management
+│   ├── useReverseGeocode.js      Nominatim lookup with IndexedDB cache
+│   ├── useStravaAuth.js          Strava OAuth 2.0 flow
+│   ├── useStravaActivities.js    Strava activity list + GPX download
+│   ├── useDraggedVideo.js        Video drag-and-drop handling
+│   └── useVideoCache.js          Video file blob URL cache
 └── components/
-    ├── DropZone.vue       GPX drag-and-drop input
-    ├── VideoLoader.vue    Video file drag-and-drop strip
-    ├── VideoStage.vue     Canvas map + video element + HUD overlay
-    ├── MetricsRow.vue     Session stats bar (distance, elevation, speed, time)
-    ├── PlaybackControls.vue  Play/Pause/Reset/Speed + Export button
-    ├── ExportButton.vue   Export button with spinner + progress %
-    ├── SyncPanel.vue      Elevation timeline, trim handles, offset slider
-    └── ChartRow.vue       Chart.js elevation profile + speed chart
+    ├── GpxLoader.vue           GPX source row (file pick + Strava toggle)
+    ├── VideoLoader.vue         Video file drag-and-drop strip + segment list
+    ├── VideoStage.vue          Canvas map + <video> element + HUD overlay
+    ├── SyncPanel.vue           Full timeline — clips, GPX, sync, charts lanes
+    ├── ChartRow.vue            Chart.js speed / elevation / HR / cadence / power charts
+    ├── MetricsRow.vue          Session stats row
+    ├── PlaybackControls.vue    Play / Pause / Reset / Speed selector
+    ├── ExportButton.vue        Export button with progress ring
+    ├── CaptionEditor.vue       Whisper trigger + caption segment list + style controls
+    ├── OverlayFormatBar.vue    Overlay format selector (7 presets)
+    ├── OverlayColorPicker.vue  Accent color hex picker
+    ├── FilterBar.vue           Video filter selector
+    ├── SpeedCurveBar.vue       Speed curve preset selector
+    ├── PlayerSizeBar.vue       Aspect ratio selector
+    ├── StickerExport.vue       Activity sticker PNG export
+    ├── StravaConnect.vue       Strava OAuth connect + activity browser
+    └── DropZone.vue            Generic file drag-and-drop zone
 ```

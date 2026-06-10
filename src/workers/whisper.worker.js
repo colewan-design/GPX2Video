@@ -4,9 +4,13 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
 
 env.allowLocalModels = false
 
-// Force WASM-only execution — prevents ONNX Runtime from creating WebGL/WebGPU
-// contexts that compete with the app's VideoEncoder and video shader, which can
-// cause GPU context loss and truncated exports.
+// Force WASM (CPU) execution provider only.
+// wasm.proxy = false  — run WASM inline in this worker, not via a nested proxy worker.
+// wasm.numThreads = 1 — single-threaded WASM avoids spawning SharedArrayBuffer threads.
+// session_options.executionProviders = ['wasm'] (passed to pipeline below) is what
+// actually prevents ONNX Runtime from creating a WebGL/WebGPU context in this worker.
+// Without it, ort-web tries to initialise its WebGL EP, which consumes one of Chrome's
+// ~8 per-process WebGL context slots and can kill the main-thread preview shader.
 env.backends.onnx.wasm.proxy = false
 env.backends.onnx.wasm.numThreads = 1
 
@@ -46,6 +50,7 @@ self.addEventListener('message', async (e) => {
         progress_callback: makeProgressTracker((ratio) => {
           self.postMessage({ type: 'progress', ratio })
         }),
+        session_options: { executionProviders: ['wasm'] },
       })
       currentModel = modelId
       self.postMessage({ type: 'ready' })

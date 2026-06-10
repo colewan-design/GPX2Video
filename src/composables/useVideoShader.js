@@ -310,9 +310,6 @@ export function useVideoShader() {
       if (posBuf) gl.deleteBuffer(posBuf)
       if (uvBuf)  gl.deleteBuffer(uvBuf)
       if (prog)   gl.deleteProgram(prog)
-      // Explicitly release the GPU context so Chrome's per-page limit isn't exhausted
-      // when videos are switched or the component is remounted.
-      gl.getExtension('WEBGL_lose_context')?.loseContext()
     }
     gl = prog = tex = posBuf = uvBuf = null
     videoEl = canvasEl = null

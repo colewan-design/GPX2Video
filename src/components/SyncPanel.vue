@@ -241,16 +241,21 @@ const videoTrimRangeText = computed(() => {
 })
 
 // Shows the real-world time of the current video frame (mirrors what the overlay displays)
-const currentFrameTimeInput = computed(() => {
-  const p = props.points[props.animIdx]
-  const d = p?.time
-  if (!d) return ''
+function fmtDateTimeInput(d) {
   const pad = n => String(n).padStart(2, '0')
   const mo = pad(d.getMonth() + 1), day = pad(d.getDate()), yr = d.getFullYear()
   let h = d.getHours(), mi = pad(d.getMinutes()), s = pad(d.getSeconds())
   const ampm = h >= 12 ? 'PM' : 'AM'
   h = h % 12 || 12
   return `${mo}/${day}/${yr} ${h}:${mi}:${s} ${ampm}`
+}
+
+const currentFrameTimeInput = computed(() => {
+  const p = props.points[props.animIdx]
+  const d = p?.time
+  if (d) return fmtDateTimeInput(d)
+  // No GPS time for this frame — pre-fill with now so the user has something to edit
+  return fmtDateTimeInput(new Date())
 })
 
 // Accepts: "6:57:22 PM", "18:57:22", "MM/DD/YYYY h:mm:ss AM", "YYYY-MM-DDThh:mm:ss"
